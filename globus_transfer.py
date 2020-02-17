@@ -9,6 +9,8 @@ import globus_sdk
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
+AUTH_ERROR = 1
+
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
 # CLI
@@ -48,12 +50,21 @@ def endpoints():
         click.echo("[{}] {}".format(ep["id"], ep["display_name"]))
 
 
+@cli.command()
+@click.option("--limit", type=int, default=25, help="How many results to get.")
+def history(limit):
+    for task in get_transfer_client().task_list(
+        num_results=limit, filter="type:TRANSFER,DELETE"
+    ):
+        print(task["task_id"], task["type"], task["status"])
+
+
 # BACKEND
 
 
-def acquire_transfer_token():
+def acquire_auth_and_transfer_data():
     client = globus_sdk.NativeAppAuthClient(CLIENT_ID)
-    client.oauth2_start_flow()
+    client.oauth2_start_flow(refresh_tokens=True)
 
     click.echo(f"Go to this URL and login: {client.oauth2_get_authorize_url()}")
     auth_code = click.prompt("Copy the code you get after login here").strip()
@@ -63,26 +74,25 @@ def acquire_transfer_token():
     globus_auth_data = token_response.by_resource_server["auth.globus.org"]
     globus_transfer_data = token_response.by_resource_server["transfer.api.globus.org"]
 
-    auth_token = globus_auth_data["access_token"]
-    transfer_token = globus_transfer_data["access_token"]
-
-    return transfer_token
+    return globus_auth_data, globus_transfer_data
 
 
 def make_transfer_client(transfer_token):
+    # TODO: refresh tokens
     authorizer = globus_sdk.AccessTokenAuthorizer(transfer_token)
     return globus_sdk.TransferClient(authorizer=authorizer)
 
 
 def get_transfer_client():
     try:
-        transfer_token = acquire_transfer_token()
+        auth_data, transfer_data = acquire_auth_and_transfer_data()
         logger.debug("Acquired transfer token")
     except globus_sdk.AuthAPIError as e:
         logger.error(f"Was not able to authorize {e.args[-1]}", file=sys.stderr)
         click.echo(f"ERROR: was not able to authorize", err=True)
+        sys.exit(AUTH_ERROR)
 
-    return make_transfer_client(transfer_token)
+    return make_transfer_client(transfer_data["access_token"])
 
 
 if __name__ == "__main__":
