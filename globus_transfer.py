@@ -8,11 +8,12 @@ from click_didyoumean import DYMGroup
 
 import globus_sdk
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 AUTHORIZATION_ERROR = 1
 ACTIVATION_ERROR = 1
+INVALID_TRANSFER_SPECIFICATION_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
@@ -28,26 +29,8 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
 )
 def cli(verbose):
-    _setup_logger(verbose)
+    setup_logging(verbose)
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
-
-
-def _setup_logger(verbose):
-    handler = logging.StreamHandler(stream=sys.stderr)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s"
-        )
-    )
-
-    if verbose >= 1:
-        logger.addHandler(handler)
-
-    if verbose >= 2:
-        globus_logger = logging.getLogger("globus_sdk")
-        globus_logger.setLevel(logging.DEBUG)
-        globus_logger.addHandler(handler)
 
 
 @cli.command()
@@ -56,7 +39,7 @@ def login():
         refresh_token = acquire_refresh_token()
         logger.debug("Acquired refresh token")
     except globus_sdk.AuthAPIError as e:
-        logger.error(f"Was not able to authorize {e.args[-1]}", file=sys.stderr)
+        logger.error(f"Was not able to authorize {e.args[-1]}")
         click.echo(f"ERROR: was not able to authorize", err=True)
         sys.exit(AUTHORIZATION_ERROR)
 
@@ -76,7 +59,9 @@ def endpoints(limit):
 def history(limit):
     tc = get_transfer_client()
     for task in tc.task_list(num_results=limit, filter="type:TRANSFER,DELETE"):
-        click.echo(f'{task["task_id"]} {task["type"]} {task["status"]}')
+        click.echo(
+            f'{task["task_id"]} {task["label"] or ""} {task["type"]} {task["status"]}'
+        )
 
 
 @cli.command()
@@ -85,20 +70,78 @@ def history(limit):
 def ls(endpoint, path):
     tc = get_transfer_client()
 
-    _activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoint_or_exit(tc, endpoint)
 
     for entry in tc.operation_ls(endpoint, path=path):
         click.echo(f"{entry['name']} {entry['type']}")
 
 
-def _activate_endpoint_or_exit(transfer_client, endpoint):
+@cli.command()
+@click.argument("source_endpoint")
+@click.argument("destination_endpoint")
+@click.argument("transfers", nargs=-1)
+@click.option("--label", help="The label for the transfer.")
+def transfer(source_endpoint, destination_endpoint, transfers, label):
+    tc = get_transfer_client()
+
+    tdata = globus_sdk.TransferData(
+        tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
+    )
+    for t in transfers:
+        src, dst = t.split(":")
+        if src[-1] == dst[-1] == "/":  # directory -> directory
+            logger.debug(f"Transfer directory {src} -> {dst}")
+            tdata.add_item(src, dst, recursive=True)
+        elif src[-1] == "/" or dst[-1] == "/":  # malformed directory transfer
+            logger.error(f"Invalid transfer specification: {t}")
+            click.echo(
+                f"ERROR: invalid transfer specification '{t}' (if transferring directories, both paths must end with /)",
+                err=True,
+            )
+            sys.exit(INVALID_TRANSFER_SPECIFICATION_ERROR)
+        else:  # file -> file
+            logger.debug(f"Transfer file {src} -> {dst}")
+            tdata.add_item(src, dst)
+
+    activate_endpoint_or_exit(tc, source_endpoint)
+    activate_endpoint_or_exit(tc, destination_endpoint)
+
+    result = tc.submit_transfer(tdata)
+
+    click.echo(f"Transfer task id is {result['task_id']}")
+
+
+# TODO: how do we check for transfer errors? e.g., directories without trailing slashes, path not existing, etc.
+
+# CLI HELPERS
+
+
+def setup_logging(verbose):
+    handler = logging.StreamHandler(stream=sys.stderr)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s"
+        )
+    )
+
+    if verbose >= 1:
+        logger.addHandler(handler)
+
+    if verbose >= 2:
+        globus_logger = logging.getLogger("globus_sdk")
+        globus_logger.setLevel(logging.DEBUG)
+        globus_logger.addHandler(handler)
+
+
+def activate_endpoint_or_exit(transfer_client, endpoint):
     success = (
         is_endpoint_active(transfer_client, endpoint)
         or activate_endpoint_automatically(transfer_client, endpoint)
         or activate_endpoint_manually(transfer_client, endpoint)
     )
     if not success:
-        logger.error(f"Was not able to activate endpoint {endpoint}", file=sys.stderr)
+        logger.error(f"Was not able to activate endpoint {endpoint}")
         click.echo(f"ERROR: was not able to activate endpoint {endpoint}", err=True)
         sys.exit(ACTIVATION_ERROR)
 
