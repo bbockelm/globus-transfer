@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlencode
 import datetime
+import functools
 
 import click
 from click_didyoumean import DYMGroup
@@ -20,6 +21,8 @@ CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
 REFRESH_TOKEN_PATH = Path.home() / ".globus_refresh_token"
 
+HEADER_FMT = functools.partial(click.style, bold=True)
+
 # CLI
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -30,12 +33,22 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
 )
 def cli(verbose):
+    """
+    Initial setup: run
+    
+        globus login
+        
+    and follow the printed instructions.
+    """
     setup_logging(verbose)
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
 
 @cli.command()
 def login():
+    """
+    Get a token from Globus that will allow this tool to perform other operations.
+    """
     try:
         refresh_token = acquire_refresh_token()
         logger.debug("Acquired refresh token")
@@ -50,36 +63,88 @@ def login():
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
 def endpoints(limit):
+    """
+    List endpoints.
+    """
     tc = get_transfer_client()
-    for ep in tc.endpoint_search(filter_scope="my-endpoints", num_results=limit):
+    for ep in tc.endpoint_search(
+        filter_scope="my-endpoints", type="TRANSFER,DELETE", num_results=limit
+    ):
         click.echo("[{}] {}".format(ep["id"], ep["display_name"]))
+
+
+DEFAULT_HISTORY_HEADERS = [
+    "task_id",
+    "label",
+    "status",
+    "source_endpoint",
+    "destination_endpoint",
+    "completion_time",
+]
+HISTORY_COLUMN_ALIGNMENTS = {"task_id": "ljust", "label": "ljust"}
+
+
+def history_style(row):
+    fg = {"ACTIVE": "blue", "SUCCEEDED": "green", "FAILED": "red"}[row["status"]]
+
+    return {"fg": fg}
 
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
 def history(limit):
+    """
+    List transfer events.
+    """
     tc = get_transfer_client()
-    for task in tc.task_list(num_results=limit, filter="type:TRANSFER,DELETE"):
-        click.echo(
-            f'{task["task_id"]} {task["label"] or ""} {task["type"]} {task["status"]}'
+    tasks = [task.data for task in tc.task_list(num_results=limit)]
+    for task in tasks:
+        if task["label"] is None:
+            task.pop("label")
+
+    click.echo(
+        table(
+            headers=DEFAULT_HISTORY_HEADERS,
+            rows=tasks,
+            alignment=HISTORY_COLUMN_ALIGNMENTS,
+            header_fmt=HEADER_FMT,
+            style=history_style,
         )
+    )
+
+
+DEFAULT_LS_HEADERS = ["DATA_TYPE", "name", "size"]
+LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 
 
 @cli.command()
 @click.argument("endpoint")
 @click.option("--path", type=str, default="~/")
 def ls(endpoint, path):
+    """
+    List the directory contents of a given endpoint at a given path.
+    """
     tc = get_transfer_client()
 
     activate_endpoint_or_exit(tc, endpoint)
 
-    for entry in tc.operation_ls(endpoint, path=path):
-        click.echo(f"{entry['name']} {entry['type']}")
+    entries = list(tc.operation_ls(endpoint, path=path))
+    click.echo(
+        table(
+            headers=DEFAULT_LS_HEADERS,
+            rows=entries,
+            alignment=LS_COLUMN_ALIGNMENTS,
+            header_fmt=HEADER_FMT,
+        )
+    )
 
 
 @cli.command()
 @click.argument("endpoint")
 def activate(endpoint):
+    """
+    Activate a Globus endpoint.
+    """
     tc = get_transfer_client()
 
     activate_endpoint_or_exit(tc, endpoint)
@@ -89,8 +154,25 @@ def activate(endpoint):
 @click.argument("source_endpoint")
 @click.argument("destination_endpoint")
 @click.argument("transfers", nargs=-1)
-@click.option("--label", help="The label for the transfer.")
+@click.option("--label", help="A label for the transfer.")
 def transfer(source_endpoint, destination_endpoint, transfers, label):
+    """
+    Initiate a file transfer task from a source endpoint to a destination endpoint.
+    One invocation can include any number of transfer specifications, each of which
+    can transfer a single file or an entire directory (recursively).
+
+    Each transfer specification should be of the form
+
+        /path/to/source/file:/path/to/destination/file
+
+    If both paths end with a / the transfer is interpreted as a directory transfer.
+    If neither ends with a / it is a single file transfer.
+    (Both paths must either end or not end with /, mixing them is an error.)
+    Paths should be absolute; to expand the user's home directory on either side, wrap the transfer
+    specification in single quotes to prevent local expansion:
+
+        '~/path/to/source/file':'~/path/to/destination/file'
+    """
     tc = get_transfer_client()
 
     tdata = globus_sdk.TransferData(
@@ -160,6 +242,53 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
     return True
 
 
+def table(
+    headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None
+):
+    if header_fmt is None:
+        header_fmt = lambda _: _
+    if row_fmt is None:
+        row_fmt = lambda _: _
+    if alignment is None:
+        alignment = {}
+    if style is None:
+        style = lambda _: {}
+
+    headers = tuple(headers)
+    lengths = [len(str(h)) for h in headers]
+
+    align_methods = [alignment.get(h, "center") for h in headers]
+
+    processed_rows = []
+    for row in rows:
+        processed_rows.append([str(row.get(key, fill)) for key in headers])
+
+    for row in processed_rows:
+        lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
+
+    header = header_fmt(
+        "  ".join(
+            getattr(str(h), a)(l) for h, l, a in zip(headers, lengths, align_methods)
+        ).rstrip()
+    )
+
+    lines = [
+        click.style(
+            row_fmt(
+                "  ".join(
+                    getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods)
+                )
+            ),
+            **style(original_row),
+        )
+        for original_row, row in zip(rows, processed_rows)
+    ]
+
+    output = "\n".join([header] + lines)
+
+    return output
+
+
 # BACKEND
 
 
@@ -195,7 +324,16 @@ def read_refresh_token(path=None):
     if path is None:
         path = REFRESH_TOKEN_PATH
 
-    token = REFRESH_TOKEN_PATH.read_text().strip()
+    try:
+        token = REFRESH_TOKEN_PATH.read_text().strip()
+    except FileNotFoundError:
+        logger.error(f"No refresh token file found at {path}")
+        click.echo(
+            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
+            err=True,
+        )
+        sys.exit(AUTHORIZATION_ERROR)
+
     logger.debug(f"Read refresh token from {path}")
 
     return token
