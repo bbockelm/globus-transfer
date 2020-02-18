@@ -2,6 +2,7 @@ import logging
 import sys
 from pathlib import Path
 from urllib.parse import urlencode
+import datetime
 
 import click
 from click_didyoumean import DYMGroup
@@ -77,6 +78,14 @@ def ls(endpoint, path):
 
 
 @cli.command()
+@click.argument("endpoint")
+def activate(endpoint):
+    tc = get_transfer_client()
+
+    activate_endpoint_or_exit(tc, endpoint)
+
+
+@cli.command()
 @click.argument("source_endpoint")
 @click.argument("destination_endpoint")
 @click.argument("transfers", nargs=-1)
@@ -136,7 +145,7 @@ def setup_logging(verbose):
 
 def activate_endpoint_or_exit(transfer_client, endpoint):
     success = (
-        is_endpoint_active(transfer_client, endpoint)
+        EndpointInfo.get(transfer_client, endpoint).is_active
         or activate_endpoint_automatically(transfer_client, endpoint)
         or activate_endpoint_manually(transfer_client, endpoint)
     )
@@ -144,6 +153,11 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
         logger.error(f"Was not able to activate endpoint {endpoint}")
         click.echo(f"ERROR: was not able to activate endpoint {endpoint}", err=True)
         sys.exit(ACTIVATION_ERROR)
+
+    expires_in = EndpointInfo.get(transfer_client, endpoint).activation_expires_in
+    logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
+
+    return True
 
 
 # BACKEND
@@ -194,12 +208,28 @@ def get_transfer_client():
     return globus_sdk.TransferClient(authorizer=authorizer)
 
 
-def get_endpoint_info(transfer_client, endpoint):
-    return transfer_client.get_endpoint(endpoint)
+class EndpointInfo:
+    def __init__(self, response):
+        self._response = response
 
+    @classmethod
+    def get(cls, transfer_client, endpoint):
+        return cls(transfer_client.get_endpoint(endpoint))
 
-def is_endpoint_active(transfer_client, endpoint):
-    return get_endpoint_info(transfer_client, endpoint)["activated"] is True
+    def __getitem__(self, item):
+        return self._response[item]
+
+    @property
+    def id(self):
+        return self["id"]
+
+    @property
+    def is_active(self):
+        return self["activated"] is True
+
+    @property
+    def activation_expires_in(self):
+        return datetime.timedelta(seconds=self["expires_in"])
 
 
 def activate_endpoint_automatically(transfer_client, endpoint):
@@ -210,13 +240,13 @@ def activate_endpoint_automatically(transfer_client, endpoint):
 
 def activate_endpoint_manually(transfer_client, endpoint):
     query_string = urlencode(
-        {"origin_id": get_endpoint_info(transfer_client, endpoint)["id"]}
+        {"origin_id": EndpointInfo.get(transfer_client, endpoint).id}
     )
     click.echo(
         f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
     )
     click.confirm("Press ENTER after activating the endpoint...")
-    return is_endpoint_active(transfer_client, endpoint)
+    return EndpointInfo.get(transfer_client, endpoint).is_active
 
 
 if __name__ == "__main__":
