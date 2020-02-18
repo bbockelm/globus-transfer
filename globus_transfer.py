@@ -1,6 +1,7 @@
 import logging
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 import click
 from click_didyoumean import DYMGroup
@@ -10,7 +11,8 @@ import globus_sdk
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-AUTH_ERROR = 1
+AUTHORIZATION_ERROR = 1
+ACTIVATION_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
@@ -23,19 +25,14 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 @click.group(context_settings=CONTEXT_SETTINGS, cls=DYMGroup)
 @click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    default=False,
-    help="Show log messages as the CLI runs.",
+    "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
 )
 def cli(verbose):
-    if verbose:
-        _setup_logger()
+    _setup_logger(verbose)
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
 
-def _setup_logger():
+def _setup_logger(verbose):
     handler = logging.StreamHandler(stream=sys.stderr)
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(
@@ -44,7 +41,13 @@ def _setup_logger():
         )
     )
 
-    logger.addHandler(handler)
+    if verbose >= 1:
+        logger.addHandler(handler)
+
+    if verbose >= 2:
+        globus_logger = logging.getLogger("globus_sdk")
+        globus_logger.setLevel(logging.DEBUG)
+        globus_logger.addHandler(handler)
 
 
 @cli.command()
@@ -55,24 +58,49 @@ def login():
     except globus_sdk.AuthAPIError as e:
         logger.error(f"Was not able to authorize {e.args[-1]}", file=sys.stderr)
         click.echo(f"ERROR: was not able to authorize", err=True)
-        sys.exit(AUTH_ERROR)
+        sys.exit(AUTHORIZATION_ERROR)
 
     write_refresh_token(refresh_token)
 
 
 @cli.command()
-def endpoints():
-    for ep in get_transfer_client().endpoint_search(filter_scope="my-endpoints"):
+@click.option("--limit", type=int, default=25, help="How many results to get.")
+def endpoints(limit):
+    tc = get_transfer_client()
+    for ep in tc.endpoint_search(filter_scope="my-endpoints", num_results=limit):
         click.echo("[{}] {}".format(ep["id"], ep["display_name"]))
 
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
 def history(limit):
-    for task in get_transfer_client().task_list(
-        num_results=limit, filter="type:TRANSFER,DELETE"
-    ):
-        print(task["task_id"], task["type"], task["status"])
+    tc = get_transfer_client()
+    for task in tc.task_list(num_results=limit, filter="type:TRANSFER,DELETE"):
+        click.echo(f'{task["task_id"]} {task["type"]} {task["status"]}')
+
+
+@cli.command()
+@click.argument("endpoint")
+@click.option("--path", type=str, default="~/")
+def ls(endpoint, path):
+    tc = get_transfer_client()
+
+    _activate_endpoint_or_exit(tc, endpoint)
+
+    for entry in tc.operation_ls(endpoint, path=path):
+        click.echo(f"{entry['name']} {entry['type']}")
+
+
+def _activate_endpoint_or_exit(transfer_client, endpoint):
+    success = (
+        is_endpoint_active(transfer_client, endpoint)
+        or activate_endpoint_automatically(transfer_client, endpoint)
+        or activate_endpoint_manually(transfer_client, endpoint)
+    )
+    if not success:
+        logger.error(f"Was not able to activate endpoint {endpoint}", file=sys.stderr)
+        click.echo(f"ERROR: was not able to activate endpoint {endpoint}", err=True)
+        sys.exit(ACTIVATION_ERROR)
 
 
 # BACKEND
@@ -121,6 +149,31 @@ def get_transfer_client():
     client = get_client()
     authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
     return globus_sdk.TransferClient(authorizer=authorizer)
+
+
+def get_endpoint_info(transfer_client, endpoint):
+    return transfer_client.get_endpoint(endpoint)
+
+
+def is_endpoint_active(transfer_client, endpoint):
+    return get_endpoint_info(transfer_client, endpoint)["activated"] is True
+
+
+def activate_endpoint_automatically(transfer_client, endpoint):
+    response = transfer_client.endpoint_autoactivate(endpoint)
+
+    return response["code"] != "AutoActivationFailed"
+
+
+def activate_endpoint_manually(transfer_client, endpoint):
+    query_string = urlencode(
+        {"origin_id": get_endpoint_info(transfer_client, endpoint)["id"]}
+    )
+    click.echo(
+        f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
+    )
+    click.confirm("Press ENTER after activating the endpoint...")
+    return is_endpoint_active(transfer_client, endpoint)
 
 
 if __name__ == "__main__":
