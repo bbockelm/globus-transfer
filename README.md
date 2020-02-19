@@ -1,6 +1,31 @@
 # globus-transfer
 
-## Get a Client
+## Installation
+
+To install the tool, run (from your shell)
+```sh
+python3 -m pip install --user --upgrade git+https://github.com/JoshKarpel/globus-transfer.git
+```
+
+If this fails, you may need to [install Python 3 and `pip` from your system package
+manager](https://realpython.com/installing-python/),
+or use something like [miniconda](https://docs.conda.io/en/latest/miniconda.html)
+to set up a personal Python environment.
+
+After installation, you should be able to run
+```sh
+globus --help
+```
+To see the help message.
+
+To update the tool, run the same command as you did to install it above.
+
+
+## Development
+
+### Get a Client ID
+
+We shouldn't need to do this again, but just in case...
 
 1. Go to https://developers.globus.org/
 2. Select "Register your app with Globus".
