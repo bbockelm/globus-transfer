@@ -12,16 +12,19 @@ import globus_sdk
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+logger.addHandler(logging.NullHandler())
 
 AUTHORIZATION_ERROR = 1
 ACTIVATION_ERROR = 1
 INVALID_TRANSFER_SPECIFICATION_ERROR = 1
+CANCEL_TASK_ERROR = 1
+WAIT_TASK_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
 REFRESH_TOKEN_PATH = Path.home() / ".globus_refresh_token"
 
-HEADER_FMT = functools.partial(click.style, bold=True)
+BOLD_HEADER = functools.partial(click.style, bold=True)
 
 # CLI
 
@@ -34,11 +37,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 )
 def cli(verbose):
     """
-    Initial setup: run
-    
-        globus login
-        
-    and follow the printed instructions.
+    Initial setup: run 'globus login' and following the printed instructions.
     """
     setup_logging(verbose)
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
@@ -47,7 +46,7 @@ def cli(verbose):
 @cli.command()
 def login():
     """
-    Get a token from Globus that will allow this tool to perform other operations.
+    Get a permanent access token from Globus for initial setup.
     """
     try:
         refresh_token = acquire_refresh_token()
@@ -60,6 +59,10 @@ def login():
     write_refresh_token(refresh_token)
 
 
+DEFAULT_ENDPOINTS_HEADERS = ["id", "display_name"]
+ENDPOINTS_COLUMN_ALIGNMENTS = {"id": "ljust", "display_name": "ljust"}
+
+
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
 def endpoints(limit):
@@ -67,10 +70,22 @@ def endpoints(limit):
     List endpoints.
     """
     tc = get_transfer_client()
-    for ep in tc.endpoint_search(
-        filter_scope="my-endpoints", type="TRANSFER,DELETE", num_results=limit
-    ):
-        click.echo("[{}] {}".format(ep["id"], ep["display_name"]))
+    endpoints = list(
+        tc.endpoint_search(
+            filter_scope="my-endpoints", type="TRANSFER,DELETE", num_results=limit
+        )
+    )
+
+    click.echo(
+        table(
+            headers=DEFAULT_ENDPOINTS_HEADERS,
+            rows=endpoints,
+            alignment=ENDPOINTS_COLUMN_ALIGNMENTS,
+            header_fmt=BOLD_HEADER,
+        )
+    )
+
+    click.echo("\nWeb View: https://app.globus.org/endpoints")
 
 
 DEFAULT_HISTORY_HEADERS = [
@@ -107,10 +122,11 @@ def history(limit):
             headers=DEFAULT_HISTORY_HEADERS,
             rows=tasks,
             alignment=HISTORY_COLUMN_ALIGNMENTS,
-            header_fmt=HEADER_FMT,
+            header_fmt=BOLD_HEADER,
             style=history_style,
         )
     )
+    click.echo("\nWeb View: https://app.globus.org/activity?show=history")
 
 
 DEFAULT_LS_HEADERS = ["DATA_TYPE", "name", "size"]
@@ -122,7 +138,7 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 @click.option("--path", type=str, default="~/")
 def ls(endpoint, path):
     """
-    List the directory contents of a given endpoint at a given path.
+    List the directory contents of a given endpoint.
     """
     tc = get_transfer_client()
 
@@ -134,7 +150,7 @@ def ls(endpoint, path):
             headers=DEFAULT_LS_HEADERS,
             rows=entries,
             alignment=LS_COLUMN_ALIGNMENTS,
-            header_fmt=HEADER_FMT,
+            header_fmt=BOLD_HEADER,
         )
     )
 
@@ -157,7 +173,9 @@ def activate(endpoint):
 @click.option("--label", help="A label for the transfer.")
 def transfer(source_endpoint, destination_endpoint, transfers, label):
     """
-    Initiate a file transfer task from a source endpoint to a destination endpoint.
+    Initiate a file transfer task.
+
+    Transfer files from a source endpoint to a destination endpoint.
     One invocation can include any number of transfer specifications, each of which
     can transfer a single file or an entire directory (recursively).
 
@@ -204,19 +222,75 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
 
 # TODO: how do we check for transfer errors? e.g., directories without trailing slashes, path not existing, etc.
 
+
+@cli.command()
+@click.argument("task_id")
+def cancel(task_id):
+    """
+    Cancel a task.
+    """
+    tc = get_transfer_client()
+
+    try:
+        result = tc.cancel_task(task_id)
+    except globus_sdk.TransferAPIError as e:
+        logger.exception(f"Task {task_id} was not successfully cancelled.")
+        click.echo(
+            f"ERROR: Task {task_id} was not successfully cancelled: {e.message}",
+            err=True,
+        )
+        sys.exit(CANCEL_TASK_ERROR)
+
+    if result["code"] == "Cancelled":
+        click.echo(f"Task {task_id} has been successfully cancelled.")
+    else:
+        logger.error(f"Task {task_id} was not successfully cancelled:\n{result}")
+        click.echo(
+            f"ERROR: Task {task_id} was not successfully cancelled:\n{result}", err=True
+        )
+        sys.exit(CANCEL_TASK_ERROR)
+
+
+@cli.command()
+@click.argument("task_id")
+@click.option("--timeout", type=int, default=60, help="How many seconds to fail after.")
+@click.option(
+    "--interval", type=int, default=10, help="How often the task status is checked."
+)
+def wait(task_id, timeout, interval):
+    """
+    Wait for a task to complete.
+    """
+    tc = get_transfer_client()
+
+    try:
+        done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
+    except globus_sdk.TransferAPIError as e:
+        logger.exception(f"Could not wait for task {task_id}.")
+        click.echo(f"ERROR: Could not wait for task {task_id}: {e.message}", err=True)
+        sys.exit(WAIT_TASK_ERROR)
+
+    if not done:
+        click.echo(
+            f"Task {task_id} did not finish within the timeout ({timeout} seconds)"
+        )
+        sys.exit(WAIT_TASK_ERROR)
+
+    click.echo(task_id)
+
+
 # CLI HELPERS
 
 
 def setup_logging(verbose):
-    handler = logging.StreamHandler(stream=sys.stderr)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s"
-        )
-    )
-
     if verbose >= 1:
+        handler = logging.StreamHandler(stream=sys.stderr)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s"
+            )
+        )
         logger.addHandler(handler)
 
     if verbose >= 2:
