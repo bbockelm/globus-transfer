@@ -14,7 +14,7 @@ setup(
     long_description=Path("README.md").read_text(),
     long_description_content_type="text/markdown",
     url="https://github.com/JoshKarpel/globus-transfer",
-    modules=["globus"],
+    py_modules=["globus"],
     entry_points={"console_scripts": ["globus = globus:cli"]},
     install_requires=Path("requirements.txt").read_text().splitlines(),
 )
