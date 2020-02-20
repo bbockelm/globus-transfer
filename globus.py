@@ -46,7 +46,7 @@ def cli(verbose):
 @cli.command()
 def login():
     """
-    Get a permanent access token from Globus for initial setup.
+    Get a permanent token from Globus for initial setup.
     """
     try:
         refresh_token = acquire_refresh_token()
@@ -69,7 +69,7 @@ def endpoints(limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
     endpoints = list(
         tc.endpoint_search(
             filter_scope="my-endpoints", type="TRANSFER,DELETE", num_results=limit
@@ -111,7 +111,7 @@ def history(limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -135,12 +135,17 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 
 @cli.command()
 @click.argument("endpoint")
-@click.option("--path", type=str, default="~/")
+@click.option(
+    "--path",
+    type=str,
+    default="~/",
+    help="The path to list the contents of. Defaults to '~/'.",
+)
 def ls(endpoint, path):
     """
-    List the directory contents of a given endpoint.
+    List the directory contents of a path on an endpoint.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -161,7 +166,7 @@ def activate(endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -176,6 +181,7 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
     Initiate a file transfer task.
 
     Transfer files from a source endpoint to a destination endpoint.
+    The resulting task_id is printed to stdout.
     One invocation can include any number of transfer specifications, each of which
     can transfer a single file or an entire directory (recursively).
 
@@ -191,7 +197,7 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
 
         '~/path/to/source/file':'~/path/to/destination/file'
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -217,7 +223,7 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
 
     result = tc.submit_transfer(tdata)
 
-    click.echo(f"Transfer task id is {result['task_id']}")
+    click.echo(result["task_id"])
 
 
 # TODO: how do we check for transfer errors? e.g., directories without trailing slashes, path not existing, etc.
@@ -229,7 +235,7 @@ def cancel(task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
 
     try:
         result = tc.cancel_task(task_id)
@@ -253,15 +259,23 @@ def cancel(task_id):
 
 @cli.command()
 @click.argument("task_id")
-@click.option("--timeout", type=int, default=60, help="How many seconds to fail after.")
 @click.option(
-    "--interval", type=int, default=10, help="How often the task status is checked."
+    "--timeout",
+    type=int,
+    default=60,
+    help="How many seconds to fail after. Defaults to 60 seconds.",
+)
+@click.option(
+    "--interval",
+    type=int,
+    default=10,
+    help="How often the task status is checked. Defaults to 10 seconds.",
 )
 def wait(task_id, timeout, interval):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client()
+    tc = get_transfer_client_or_exit()
 
     try:
         done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
@@ -314,6 +328,22 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
     logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
 
     return True
+
+
+def get_transfer_client_or_exit():
+    try:
+        refresh_token = read_refresh_token()
+    except FileNotFoundError:
+        logger.error(f"No refresh token file found")
+        click.echo(
+            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
+            err=True,
+        )
+        sys.exit(AUTHORIZATION_ERROR)
+
+    client = get_client()
+    authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
+    return globus_sdk.TransferClient(authorizer=authorizer)
 
 
 def table(
@@ -398,26 +428,10 @@ def read_refresh_token(path=None):
     if path is None:
         path = REFRESH_TOKEN_PATH
 
-    try:
-        token = REFRESH_TOKEN_PATH.read_text().strip()
-    except FileNotFoundError:
-        logger.error(f"No refresh token file found at {path}")
-        click.echo(
-            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
-            err=True,
-        )
-        sys.exit(AUTHORIZATION_ERROR)
-
+    token = REFRESH_TOKEN_PATH.read_text().strip()
     logger.debug(f"Read refresh token from {path}")
 
     return token
-
-
-def get_transfer_client():
-    refresh_token = read_refresh_token()
-    client = get_client()
-    authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
-    return globus_sdk.TransferClient(authorizer=authorizer)
 
 
 class EndpointInfo:
