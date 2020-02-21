@@ -88,6 +88,13 @@ def endpoints(limit):
     click.echo("\nWeb View: https://app.globus.org/endpoints")
 
 
+@cli.command()
+@click.argument('endpoint')
+def info(endpoint):
+    info = EndpointInfo.get(endpoint)
+    click.echo(info._response)
+
+
 DEFAULT_HISTORY_HEADERS = [
     "task_id",
     "label",
@@ -315,9 +322,9 @@ def setup_logging(verbose):
 
 def activate_endpoint_or_exit(transfer_client, endpoint):
     success = (
-        EndpointInfo.get(transfer_client, endpoint).is_active
-        or activate_endpoint_automatically(transfer_client, endpoint)
-        or activate_endpoint_manually(transfer_client, endpoint)
+            EndpointInfo.get(transfer_client, endpoint).is_active
+            or activate_endpoint_automatically(transfer_client, endpoint)
+            or activate_endpoint_manually(transfer_client, endpoint)
     )
     if not success:
         logger.error(f"Was not able to activate endpoint {endpoint}")
@@ -347,7 +354,7 @@ def get_transfer_client_or_exit():
 
 
 def table(
-    headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None
+        headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None
 ):
     if header_fmt is None:
         header_fmt = lambda _: _
