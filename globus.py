@@ -91,7 +91,8 @@ def endpoints(limit):
 @cli.command()
 @click.argument('endpoint')
 def info(endpoint):
-    info = EndpointInfo.get(endpoint)
+    tc = get_transfer_client_or_exit()
+    info = EndpointInfo.get(tc, endpoint)
     click.echo(info._response)
 
 
