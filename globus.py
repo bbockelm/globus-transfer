@@ -41,13 +41,13 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
 )
 @click.pass_context
-def cli(ctx, verbose):
+def cli(context, verbose):
     """
     Initial setup: run 'globus login' and following the printed instructions.
     """
     setup_logging(verbose)
 
-    ctx.obj = load_settings()
+    context.obj = load_settings()
 
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
@@ -58,17 +58,17 @@ def cli(ctx, verbose):
     default=True,
     help="Display as original on-disk TOML or as the internal Python dictionary.",
 )
-@click.pass_context
-def settings(ctx, as_toml):
+@click.pass_obj
+def settings(settings, as_toml):
     """
     Display the current settings.
     """
-    click.echo(toml.dumps(ctx.obj) if as_toml else ctx.obj)
+    click.echo(toml.dumps(settings) if as_toml else settings)
 
 
 @cli.command()
-@click.pass_context
-def login(ctx):
+@click.pass_obj
+def login(settings):
     """
     Get a permanent token from Globus for initial setup.
     """
@@ -80,9 +80,9 @@ def login(ctx):
         click.echo(f"ERROR: was not able to authorize", err=True)
         sys.exit(AUTHORIZATION_ERROR)
 
-    ctx.obj[AUTH][REFRESH_TOKEN] = refresh_token
+    settings[AUTH][REFRESH_TOKEN] = refresh_token
 
-    save_settings(ctx.obj)
+    save_settings(settings)
 
 
 DEFAULT_ENDPOINTS_HEADERS = ["id", "display_name"]
@@ -91,12 +91,12 @@ ENDPOINTS_COLUMN_ALIGNMENTS = {"id": "ljust", "display_name": "ljust"}
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
-@click.pass_context
-def endpoints(ctx, limit):
+@click.pass_obj
+def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
@@ -114,12 +114,12 @@ def endpoints(ctx, limit):
 
 @cli.command()
 @click.argument("endpoint")
-@click.pass_context
-def info(ctx, endpoint):
+@click.pass_obj
+def info(settings, endpoint):
     """
     Display full information about an endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     info = EndpointInfo.get(tc, endpoint)
     click.echo(info._response)
@@ -142,14 +142,69 @@ def history_style(row):
     return {"fg": fg}
 
 
+@cli.group()
+def bookmarks():
+    """
+    Subcommand group for managing endpoint bookmarks.
+    """
+    pass
+
+
+@bookmarks.command()
+@click.argument("endpoint")
+@click.argument("bookmark")
+@click.pass_obj
+def add(settings, endpoint, bookmark):
+    """
+    Add a short name ("bookmark") for an endpoint.
+    """
+    settings[BOOKMARKS][endpoint] = bookmark
+
+    save_settings(settings)
+
+
+@bookmarks.command()
+@click.argument("endpoint")
+@click.argument("bookmark")
+@click.pass_obj
+def rm(settings, endpoint):
+    """
+    Remove a bookmark for an endpoint.
+    """
+    settings[BOOKMARKS].pop(endpoint)
+
+    save_settings(settings)
+
+
+BOOKMARKS_LS_COLUMN_ALIGNMENTS = {"endpoint": "ljust", "bookmark": "ljust"}
+
+
+@bookmarks.command()
+@click.pass_obj
+def ls(settings):
+    """
+    List endpoint bookmarks.
+    """
+    rows = [{"endpoint": k, "bookmark": v} for k, v in settings[BOOKMARKS].items()]
+
+    click.echo(
+        table(
+            headers=["endpoint", "bookmark"],
+            rows=rows,
+            header_fmt=BOLD_HEADER,
+            alignment=BOOKMARKS_LS_COLUMN_ALIGNMENTS,
+        )
+    )
+
+
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
-@click.pass_context
-def history(ctx, limit):
+@click.pass_obj
+def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -179,12 +234,12 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
     default="~/",
     help="The path to list the contents of. Defaults to '~/'.",
 )
-@click.pass_context
-def ls(ctx, endpoint, path):
+@click.pass_obj
+def ls(settings, endpoint, path):
     """
     List the directory contents of a path on an endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -201,12 +256,12 @@ def ls(ctx, endpoint, path):
 
 @cli.command()
 @click.argument("endpoint")
-@click.pass_context
-def activate(ctx, endpoint):
+@click.pass_obj
+def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -216,8 +271,8 @@ def activate(ctx, endpoint):
 @click.argument("destination_endpoint")
 @click.argument("transfers", nargs=-1)
 @click.option("--label", help="A label for the transfer.")
-@click.pass_context
-def transfer(ctx, source_endpoint, destination_endpoint, transfers, label):
+@click.pass_obj
+def transfer(settings, source_endpoint, destination_endpoint, transfers, label):
     """
     Initiate a file transfer task.
 
@@ -238,7 +293,7 @@ def transfer(ctx, source_endpoint, destination_endpoint, transfers, label):
 
         '~/path/to/source/file':'~/path/to/destination/file'
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -272,12 +327,12 @@ def transfer(ctx, source_endpoint, destination_endpoint, transfers, label):
 
 @cli.command()
 @click.argument("task_id")
-@click.pass_context
-def cancel(ctx, task_id):
+@click.pass_obj
+def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
@@ -313,12 +368,12 @@ def cancel(ctx, task_id):
     default=10,
     help="How often the task status is checked. Defaults to 10 seconds.",
 )
-@click.pass_context
-def wait(ctx, task_id, timeout, interval):
+@click.pass_obj
+def wait(settings, task_id, timeout, interval):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     try:
         done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
