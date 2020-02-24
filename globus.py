@@ -8,6 +8,8 @@ import functools
 import click
 from click_didyoumean import DYMGroup
 
+import toml
+
 import globus_sdk
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,8 @@ WAIT_TASK_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
-REFRESH_TOKEN_PATH = Path.home() / ".globus_refresh_token"
+SETTINGS_PATH = Path.home() / ".globus_transfer_settings"
+REFRESH_TOKEN_KEY = "refresh_token"
 
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
@@ -35,16 +38,35 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
 )
-def cli(verbose):
+@click.pass_context
+def cli(ctx, verbose):
     """
     Initial setup: run 'globus login' and following the printed instructions.
     """
     setup_logging(verbose)
+
+    ctx.obj = load_settings()
+
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
 
 @cli.command()
-def login():
+@click.option(
+    "--as-toml/--as-dict",
+    default=True,
+    help="Display as original on-disk TOML or as the internal Python dictionary.",
+)
+@click.pass_context
+def settings(ctx, as_toml):
+    """
+    Display the current settings.
+    """
+    click.echo(toml.dumps(ctx.obj) if as_toml else ctx.obj)
+
+
+@cli.command()
+@click.pass_context
+def login(ctx):
     """
     Get a permanent token from Globus for initial setup.
     """
@@ -56,7 +78,9 @@ def login():
         click.echo(f"ERROR: was not able to authorize", err=True)
         sys.exit(AUTHORIZATION_ERROR)
 
-    write_refresh_token(refresh_token)
+    ctx.obj[REFRESH_TOKEN_KEY] = refresh_token
+
+    save_settings(ctx.obj)
 
 
 DEFAULT_ENDPOINTS_HEADERS = ["id", "display_name"]
@@ -65,11 +89,13 @@ ENDPOINTS_COLUMN_ALIGNMENTS = {"id": "ljust", "display_name": "ljust"}
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
-def endpoints(limit):
+@click.pass_context
+def endpoints(ctx, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
     click.echo(
@@ -86,8 +112,13 @@ def endpoints(limit):
 
 @cli.command()
 @click.argument("endpoint")
-def info(endpoint):
-    tc = get_transfer_client_or_exit()
+@click.pass_context
+def info(ctx, endpoint):
+    """
+    Display full information about an endpoint.
+    """
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+
     info = EndpointInfo.get(tc, endpoint)
     click.echo(info._response)
 
@@ -111,11 +142,12 @@ def history_style(row):
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
-def history(limit):
+@click.pass_context
+def history(ctx, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -145,11 +177,12 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
     default="~/",
     help="The path to list the contents of. Defaults to '~/'.",
 )
-def ls(endpoint, path):
+@click.pass_context
+def ls(ctx, endpoint, path):
     """
     List the directory contents of a path on an endpoint.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -166,11 +199,12 @@ def ls(endpoint, path):
 
 @cli.command()
 @click.argument("endpoint")
-def activate(endpoint):
+@click.pass_context
+def activate(ctx, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -180,7 +214,8 @@ def activate(endpoint):
 @click.argument("destination_endpoint")
 @click.argument("transfers", nargs=-1)
 @click.option("--label", help="A label for the transfer.")
-def transfer(source_endpoint, destination_endpoint, transfers, label):
+@click.pass_context
+def transfer(ctx, source_endpoint, destination_endpoint, transfers, label):
     """
     Initiate a file transfer task.
 
@@ -201,7 +236,7 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
 
         '~/path/to/source/file':'~/path/to/destination/file'
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -235,11 +270,12 @@ def transfer(source_endpoint, destination_endpoint, transfers, label):
 
 @cli.command()
 @click.argument("task_id")
-def cancel(task_id):
+@click.pass_context
+def cancel(ctx, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
 
     try:
         result = tc.cancel_task(task_id)
@@ -275,11 +311,12 @@ def cancel(task_id):
     default=10,
     help="How often the task status is checked. Defaults to 10 seconds.",
 )
-def wait(task_id, timeout, interval):
+@click.pass_context
+def wait(ctx, task_id, timeout, interval):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit()
+    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
 
     try:
         done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
@@ -317,6 +354,20 @@ def setup_logging(verbose):
         globus_logger.addHandler(handler)
 
 
+def get_transfer_client_or_exit(refresh_token):
+    if refresh_token is None:
+        logger.error(f"No refresh token found in settings")
+        click.echo(
+            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
+            err=True,
+        )
+        sys.exit(AUTHORIZATION_ERROR)
+
+    client = get_client()
+    authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
+    return globus_sdk.TransferClient(authorizer=authorizer)
+
+
 def activate_endpoint_or_exit(transfer_client, endpoint):
     success = (
         EndpointInfo.get(transfer_client, endpoint).is_active
@@ -330,24 +381,7 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
 
     expires_in = EndpointInfo.get(transfer_client, endpoint).activation_expires_in
     logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
-
     return True
-
-
-def get_transfer_client_or_exit():
-    try:
-        refresh_token = read_refresh_token()
-    except FileNotFoundError:
-        logger.error(f"No refresh token file found")
-        click.echo(
-            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
-            err=True,
-        )
-        sys.exit(AUTHORIZATION_ERROR)
-
-    client = get_client()
-    authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
-    return globus_sdk.TransferClient(authorizer=authorizer)
 
 
 def table(
@@ -418,24 +452,28 @@ def acquire_refresh_token():
     return globus_transfer_data["refresh_token"]
 
 
-def write_refresh_token(refresh_token, path=None):
-    if path is None:
-        path = REFRESH_TOKEN_PATH
+def save_settings(settings, path=None):
+    path = path or SETTINGS_PATH
 
-    path.write_text(refresh_token)
-    logger.debug(f"Wrote refresh token to {path}")
+    with path.open(mode="w") as f:
+        toml.dump(settings, f)
+
+    logger.debug(f"Wrote current settings to {path}")
 
     return path
 
 
-def read_refresh_token(path=None):
-    if path is None:
-        path = REFRESH_TOKEN_PATH
+def load_settings(path=None):
+    path = path or SETTINGS_PATH
 
-    token = REFRESH_TOKEN_PATH.read_text().strip()
-    logger.debug(f"Read refresh token from {path}")
+    try:
+        settings = toml.load(path)
+        logger.debug(f"Read settings from {path}")
+    except FileNotFoundError:
+        settings = {}
+        logger.debug(f"No settings file found at {path}, using blank settings")
 
-    return token
+    return settings
 
 
 class EndpointInfo:
