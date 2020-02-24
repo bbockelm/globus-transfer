@@ -24,8 +24,10 @@ WAIT_TASK_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
-SETTINGS_PATH = Path.home() / ".globus_transfer_settings"
-REFRESH_TOKEN_KEY = "refresh_token"
+SETTINGS_FILE_DEFAULT_PATH = Path.home() / ".globus_transfer_settings"
+AUTH = "auth"
+BOOKMARKS = "bookmarks"
+REFRESH_TOKEN = "refresh_token"
 
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
@@ -78,7 +80,7 @@ def login(ctx):
         click.echo(f"ERROR: was not able to authorize", err=True)
         sys.exit(AUTHORIZATION_ERROR)
 
-    ctx.obj[REFRESH_TOKEN_KEY] = refresh_token
+    ctx.obj[AUTH][REFRESH_TOKEN] = refresh_token
 
     save_settings(ctx.obj)
 
@@ -94,7 +96,7 @@ def endpoints(ctx, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
@@ -117,7 +119,7 @@ def info(ctx, endpoint):
     """
     Display full information about an endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     info = EndpointInfo.get(tc, endpoint)
     click.echo(info._response)
@@ -147,7 +149,7 @@ def history(ctx, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -182,7 +184,7 @@ def ls(ctx, endpoint, path):
     """
     List the directory contents of a path on an endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -204,7 +206,7 @@ def activate(ctx, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -236,7 +238,7 @@ def transfer(ctx, source_endpoint, destination_endpoint, transfers, label):
 
         '~/path/to/source/file':'~/path/to/destination/file'
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -275,7 +277,7 @@ def cancel(ctx, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
@@ -316,7 +318,7 @@ def wait(ctx, task_id, timeout, interval):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(ctx.obj.get(REFRESH_TOKEN_KEY))
+    tc = get_transfer_client_or_exit(ctx.obj[AUTH].get(REFRESH_TOKEN))
 
     try:
         done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
@@ -453,7 +455,7 @@ def acquire_refresh_token():
 
 
 def save_settings(settings, path=None):
-    path = path or SETTINGS_PATH
+    path = path or SETTINGS_FILE_DEFAULT_PATH
 
     with path.open(mode="w") as f:
         toml.dump(settings, f)
@@ -464,7 +466,7 @@ def save_settings(settings, path=None):
 
 
 def load_settings(path=None):
-    path = path or SETTINGS_PATH
+    path = path or SETTINGS_FILE_DEFAULT_PATH
 
     try:
         settings = toml.load(path)
@@ -472,6 +474,9 @@ def load_settings(path=None):
     except FileNotFoundError:
         settings = {}
         logger.debug(f"No settings file found at {path}, using blank settings")
+
+    settings.setdefault(AUTH, {})
+    settings.setdefault(BOOKMARKS, {})
 
     return settings
 
