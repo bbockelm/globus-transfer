@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import datetime
 import functools
+import pprint
 
 import click
 from click_didyoumean import DYMGroup
@@ -66,7 +67,7 @@ def settings(settings, as_toml):
     """
     Display the current settings.
     """
-    click.echo(toml.dumps(settings) if as_toml else settings)
+    click.echo(toml.dumps(settings) if as_toml else pprint.pformat(settings))
 
 
 @cli.command()
