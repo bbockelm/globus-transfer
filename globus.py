@@ -52,6 +52,9 @@ def cli(context, verbose):
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
 
+# SETTINGS COMMANDS
+
+
 @cli.command()
 @click.option(
     "--as-toml/--as-dict",
@@ -85,6 +88,85 @@ def login(settings):
     save_settings(settings)
 
 
+@cli.group()
+def bookmarks():
+    """
+    Subcommand group for managing endpoint bookmarks.
+    """
+    pass
+
+
+@bookmarks.command()
+@click.argument("bookmark")
+@click.argument("endpoint")
+@click.pass_obj
+def add(settings, bookmark, endpoint):
+    """
+    Add a short name ("bookmark") for an endpoint.
+
+    Once a bookmark is set, that name can be used in place of an endpoint id
+    argument in any other command.
+    """
+    settings[BOOKMARKS][bookmark] = endpoint
+
+    save_settings(settings)
+
+
+@bookmarks.command()
+@click.argument("bookmark")
+@click.pass_obj
+def rm(settings, bookmark):
+    """
+    Remove a bookmark for an endpoint.
+    """
+    settings[BOOKMARKS].pop(bookmark)
+
+    save_settings(settings)
+
+
+BOOKMARKS_LS_COLUMN_ALIGNMENTS = {"endpoint": "ljust", "bookmark": "ljust"}
+
+
+@bookmarks.command()
+@click.pass_obj
+def ls(settings):
+    """
+    List endpoint bookmarks.
+    """
+    rows = [{"bookmark": k, "endpoint": v} for k, v in settings[BOOKMARKS].items()]
+
+    click.echo(
+        table(
+            headers=["bookmark", "endpoint"],
+            rows=rows,
+            header_fmt=BOLD_HEADER,
+            alignment=BOOKMARKS_LS_COLUMN_ALIGNMENTS,
+        )
+    )
+
+
+def endpoint_arg(*args, **kwargs):
+    def _(func):
+        return click.argument(
+            *args, callback=_map_endpoint_through_bookmarks, **kwargs
+        )(func)
+
+    return _
+
+
+def _map_endpoint_through_bookmarks(ctx, param, value):
+    if value in ctx.obj[BOOKMARKS]:
+        v = ctx.obj[BOOKMARKS][value]
+        logger.debug(f"Found bookmark for endpoint {value} -> {v}")
+        return v
+    else:
+        logger.debug(
+            f"No bookmark for endpoint {value}, assuming it is an actual endpoint id"
+        )
+
+
+# ENDPOINT COMMANDS
+
 DEFAULT_ENDPOINTS_HEADERS = ["id", "display_name"]
 ENDPOINTS_COLUMN_ALIGNMENTS = {"id": "ljust", "display_name": "ljust"}
 
@@ -113,7 +195,7 @@ def endpoints(settings, limit):
 
 
 @cli.command()
-@click.argument("endpoint")
+@endpoint_arg("endpoint")
 @click.pass_obj
 def info(settings, endpoint):
     """
@@ -140,61 +222,6 @@ def history_style(row):
     fg = {"ACTIVE": "blue", "SUCCEEDED": "green", "FAILED": "red"}[row["status"]]
 
     return {"fg": fg}
-
-
-@cli.group()
-def bookmarks():
-    """
-    Subcommand group for managing endpoint bookmarks.
-    """
-    pass
-
-
-@bookmarks.command()
-@click.argument("endpoint")
-@click.argument("bookmark")
-@click.pass_obj
-def add(settings, endpoint, bookmark):
-    """
-    Add a short name ("bookmark") for an endpoint.
-    """
-    settings[BOOKMARKS][endpoint] = bookmark
-
-    save_settings(settings)
-
-
-@bookmarks.command()
-@click.argument("endpoint")
-@click.argument("bookmark")
-@click.pass_obj
-def rm(settings, endpoint):
-    """
-    Remove a bookmark for an endpoint.
-    """
-    settings[BOOKMARKS].pop(endpoint)
-
-    save_settings(settings)
-
-
-BOOKMARKS_LS_COLUMN_ALIGNMENTS = {"endpoint": "ljust", "bookmark": "ljust"}
-
-
-@bookmarks.command()
-@click.pass_obj
-def ls(settings):
-    """
-    List endpoint bookmarks.
-    """
-    rows = [{"endpoint": k, "bookmark": v} for k, v in settings[BOOKMARKS].items()]
-
-    click.echo(
-        table(
-            headers=["endpoint", "bookmark"],
-            rows=rows,
-            header_fmt=BOLD_HEADER,
-            alignment=BOOKMARKS_LS_COLUMN_ALIGNMENTS,
-        )
-    )
 
 
 @cli.command()
@@ -227,7 +254,7 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 
 
 @cli.command()
-@click.argument("endpoint")
+@endpoint_arg("endpoint")
 @click.option(
     "--path",
     type=str,
@@ -255,7 +282,7 @@ def ls(settings, endpoint, path):
 
 
 @cli.command()
-@click.argument("endpoint")
+@endpoint_arg("endpoint")
 @click.pass_obj
 def activate(settings, endpoint):
     """
@@ -266,9 +293,12 @@ def activate(settings, endpoint):
     activate_endpoint_or_exit(tc, endpoint)
 
 
+# TRANSFER TASK COMMANDS
+
+
 @cli.command()
-@click.argument("source_endpoint")
-@click.argument("destination_endpoint")
+@endpoint_arg("source_endpoint")
+@endpoint_arg("destination_endpoint")
 @click.argument("transfers", nargs=-1)
 @click.option("--label", help="A label for the transfer.")
 @click.pass_obj
