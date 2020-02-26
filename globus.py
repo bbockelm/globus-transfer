@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import datetime
 import functools
+import subprocess
 
 import click
 from click_didyoumean import DYMGroup
@@ -23,6 +24,8 @@ CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
+
+GIT_REPO_URL = "https://github.com/JoshKarpel/globus-transfer"
 
 SETTINGS_PATH = Path.home() / ".globus_transfer_settings"
 REFRESH_TOKEN_KEY = "refresh_token"
@@ -48,6 +51,39 @@ def cli(ctx, verbose):
     ctx.obj = load_settings()
 
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
+
+
+@cli.command()
+@click.option(
+    "--version",
+    default="master",
+    help="Which version to install (branch, tag, or sha [default master]).",
+)
+@click.option(
+    "--dry",
+    is_flag=True,
+    help="Only show what command would be run; do not actually run it.",
+)
+def upgrade(version, dry):
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "--user",
+        "--upgrade",
+        f"git+{GIT_REPO_URL}.git@{version}",
+    ]
+
+    click.echo(f"Command: {' '.join(cmd)}")
+
+    if dry:
+        return
+
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    if p.returncode != 0:
+        click.echo("ERROR: Upgrade failed. Output from pip reproduced below.")
+        click.echo(p.stdout, color="red")
 
 
 @cli.command()
