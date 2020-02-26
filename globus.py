@@ -76,15 +76,15 @@ def upgrade(version, dry):
         f"git+{GIT_REPO_URL}.git@{version}",
     ]
 
-    click.echo(f"Command: {' '.join(cmd)}")
-
     if dry:
+        click.echo(" ".join(cmd))
         return
 
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     if p.returncode != 0:
-        click.echo("ERROR: Upgrade failed. Output from pip reproduced below.")
+        click.echo("ERROR: Upgrade failed. Output from command reproduced below.")
+        click.echo(f"Command was: {' '.join(cmd)}")
         click.echo(p.stdout, color="red")
 
 
