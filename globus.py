@@ -24,6 +24,7 @@ ACTIVATION_ERROR = 1
 INVALID_TRANSFER_SPECIFICATION_ERROR = 1
 CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
+WAIT_TASK_TIMEOUT = 2
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
@@ -371,13 +372,55 @@ def activate(settings, endpoint):
 # TRANSFER TASK COMMANDS
 
 
+def wait_args(func):
+    decorators = [
+        click.option(
+            "--timeout",
+            type=int,
+            default=60,
+            help="How many seconds to fail a single attempt after. Defaults to 60 seconds.",
+        ),
+        click.option(
+            "--interval",
+            type=int,
+            default=10,
+            help="How often the task status is checked. Defaults to 10 seconds.",
+        ),
+        click.option(
+            "--attempts",
+            type=int,
+            default=1,
+            help="How many times to try waiting. Defaults to 1.",
+        ),
+    ]
+
+    for d in decorators:
+        func = d(func)
+
+    return func
+
+
 @cli.command()
 @endpoint_arg("source_endpoint")
 @endpoint_arg("destination_endpoint")
 @click.argument("transfers", nargs=-1)
 @click.option("--label", help="A label for the transfer.")
+@click.option(
+    "--wait", is_flag=True, help="If passed, wait for the transfer to complete."
+)
+@wait_args
 @click.pass_obj
-def transfer(settings, source_endpoint, destination_endpoint, transfers, label):
+def transfer(
+    settings,
+    source_endpoint,
+    destination_endpoint,
+    transfers,
+    label,
+    wait,
+    timeout,
+    interval,
+    attempts,
+):
     """
     Initiate a file transfer task.
 
@@ -397,6 +440,9 @@ def transfer(settings, source_endpoint, destination_endpoint, transfers, label):
     specification in single quotes to prevent local expansion:
 
         '~/path/to/source/file':'~/path/to/destination/file'
+
+    If --wait is passed, this command will also wait for the task to finish
+    (see the wait command itself for the semantics of this mode; run "globus wait --help").
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
@@ -423,8 +469,18 @@ def transfer(settings, source_endpoint, destination_endpoint, transfers, label):
     activate_endpoint_or_exit(tc, destination_endpoint)
 
     result = tc.submit_transfer(tdata)
+    task_id = result["task_id"]
 
-    click.echo(result["task_id"])
+    if wait:
+        wait_for_task_or_exit(
+            transfer_client=tc,
+            task_id=task_id,
+            timeout=timeout,
+            interval=interval,
+            max_attempts=attempts,
+        )
+
+    click.echo(task_id)
 
 
 # TODO: how do we check for transfer errors? e.g., directories without trailing slashes, path not existing, etc.
@@ -461,37 +517,21 @@ def cancel(settings, task_id):
 
 @cli.command()
 @click.argument("task_id")
-@click.option(
-    "--timeout",
-    type=int,
-    default=60,
-    help="How many seconds to fail after. Defaults to 60 seconds.",
-)
-@click.option(
-    "--interval",
-    type=int,
-    default=10,
-    help="How often the task status is checked. Defaults to 10 seconds.",
-)
+@wait_args
 @click.pass_obj
-def wait(settings, task_id, timeout, interval):
+def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
-    try:
-        done = tc.task_wait(task_id, timeout=timeout, polling_interval=interval)
-    except globus_sdk.TransferAPIError as e:
-        logger.exception(f"Could not wait for task {task_id}.")
-        click.echo(f"ERROR: Could not wait for task {task_id}: {e.message}", err=True)
-        sys.exit(WAIT_TASK_ERROR)
-
-    if not done:
-        click.echo(
-            f"Task {task_id} did not finish within the timeout ({timeout} seconds)"
-        )
-        sys.exit(WAIT_TASK_ERROR)
+    wait_for_task_or_exit(
+        transfer_client=tc,
+        task_id=task_id,
+        timeout=timeout,
+        interval=interval,
+        max_attempts=attempts,
+    )
 
     click.echo(task_id)
 
@@ -544,6 +584,45 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
     expires_in = EndpointInfo.get(transfer_client, endpoint).activation_expires_in
     logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
     return True
+
+
+def wait_for_task_or_exit(
+    transfer_client, task_id, timeout, interval=10, max_attempts=1
+):
+    attempts = 0
+    done = False
+    errored = False
+    while True:
+        attempts += 1
+        logger.debug(
+            f"Attempting to wait for task {task_id} [attempt {attempts}/{max_attempts}]"
+        )
+        try:
+            done = transfer_client.task_wait(
+                task_id, timeout=timeout, polling_interval=interval
+            )
+        except globus_sdk.TransferAPIError as e:
+            logger.exception(f"Could not wait for task {task_id}.")
+            click.echo(
+                f"WARNING: Could not wait for task {task_id} due to error: {e.message}",
+                err=True,
+            )
+            errored = True
+
+        if done:
+            return done
+
+        logger.debug(f"Attempt {attempts} to wait for task {task_id} failed")
+
+        if attempts >= max_attempts:
+            logger.error(
+                f"Timed out waiting for task {task_id} after {attempts} attempts."
+            )
+            click.echo(
+                f"ERROR: Timed out waiting for task {task_id} after {attempts} attempts.",
+                err=True,
+            )
+            sys.exit(WAIT_TASK_TIMEOUT if not errored else WAIT_TASK_ERROR)
 
 
 def table(
