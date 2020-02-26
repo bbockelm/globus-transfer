@@ -65,10 +65,12 @@ def cli(ctx, verbose):
     help="Only show what command would be run; do not actually run it.",
 )
 def upgrade(version, dry):
+    """Upgrade this tool by installing a new version from GitHub."""
     cmd = [
         sys.executable,
         "-m",
         "pip",
+        "install",
         "--user",
         "--upgrade",
         f"git+{GIT_REPO_URL}.git@{version}",
