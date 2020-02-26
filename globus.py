@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import datetime
 import functools
 import pprint
+import json
 
 import click
 from click_didyoumean import DYMGroup
@@ -39,7 +40,11 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 @click.group(context_settings=CONTEXT_SETTINGS, cls=DYMGroup)
 @click.option(
-    "--verbose", "-v", count=True, default=0, help="Show log messages as the CLI runs."
+    "--verbose",
+    "-v",
+    count=True,
+    default=0,
+    help="Show log messages as the CLI runs. Pass more times for more verbosity.",
 )
 @click.pass_context
 def cli(context, verbose):
@@ -280,6 +285,37 @@ def ls(settings, endpoint, path):
             header_fmt=BOLD_HEADER,
         )
     )
+
+
+@cli.command()
+@endpoint_arg("endpoint")
+@click.option(
+    "--path",
+    type=str,
+    default="~/",
+    help="The path to list the contents of. Defaults to '~/'.",
+)
+@click.option(
+    "--verbose/--compact",
+    default=True,
+    help="Whether the JSON representation should be verbose or compact. The default is verbose.",
+)
+@click.pass_obj
+def manifest(settings, endpoint, path, verbose):
+    """
+    Print a JSON manifest of directory contents on an endpoint.
+    """
+    if verbose:
+        json_dumps_kwargs = dict(indent=2)
+    else:
+        json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
+
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+
+    activate_endpoint_or_exit(tc, endpoint)
+
+    entries = list(tc.operation_ls(endpoint, path=path))
+    click.echo(json.dumps(entries, **json_dumps_kwargs))
 
 
 @cli.command()
@@ -604,7 +640,7 @@ def activate_endpoint_manually(transfer_client, endpoint):
     click.echo(
         f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
     )
-    click.confirm("Press ENTER after activating the endpoint...")
+    click.confirm("Press ENTER after activating the endpoint...", show_default=False)
     return EndpointInfo.get(transfer_client, endpoint).is_active
 
 
