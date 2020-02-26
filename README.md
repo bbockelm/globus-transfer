@@ -18,7 +18,7 @@ globus --help
 ```
 To see the help message.
 
-To update the tool, run the same command as you did to install it above.
+To update the tool to the latest version, run `globus upgrade`.
 
 ## Usage Examples
 
