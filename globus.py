@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import datetime
 import functools
+import subprocess
 import pprint
 import json
 
@@ -25,6 +26,8 @@ CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
+
+GIT_REPO_URL = "https://github.com/JoshKarpel/globus-transfer"
 
 SETTINGS_FILE_DEFAULT_PATH = Path.home() / ".globus_transfer_settings"
 AUTH = "auth"
@@ -59,6 +62,41 @@ def cli(context, verbose):
 
 
 # SETTINGS COMMANDS
+
+
+@cli.command()
+@click.option(
+    "--version",
+    default="master",
+    help="Which version to install (branch, tag, or sha [default master]).",
+)
+@click.option(
+    "--dry",
+    is_flag=True,
+    help="Only show what command would be run; do not actually run it.",
+)
+def upgrade(version, dry):
+    """Upgrade this tool by installing a new version from GitHub."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--user",
+        "--upgrade",
+        f"git+{GIT_REPO_URL}.git@{version}",
+    ]
+
+    if dry:
+        click.echo(" ".join(cmd))
+        return
+
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    if p.returncode != 0:
+        click.echo("ERROR: Upgrade failed. Output from command reproduced below.")
+        click.echo(f"Command was: {' '.join(cmd)}")
+        click.echo(p.stdout, color="red")
 
 
 @cli.command()
