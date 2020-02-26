@@ -20,7 +20,8 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.NullHandler())
 
 AUTHORIZATION_ERROR = 1
-ACTIVATION_ERROR = 1
+ENDPOINT_ACTIVATION_ERROR = 1
+ENDPOINT_INFO_ERROR = 1
 INVALID_TRANSFER_SPECIFICATION_ERROR = 1
 CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
@@ -162,9 +163,26 @@ def add(settings, bookmark, endpoint):
 @click.pass_obj
 def rm(settings, bookmark):
     """
-    Remove a bookmark for an endpoint.
+    Remove a bookmark.
     """
     settings[BOOKMARKS].pop(bookmark)
+
+    save_settings(settings)
+
+
+@bookmarks.command()
+@click.pass_obj
+def clear(settings):
+    """
+    Remove all bookmarks.
+    """
+    click.confirm(
+        "Are you sure you want to delete all of your bookmarks?",
+        abort=True,
+        default=False,
+    )
+
+    settings[BOOKMARKS].clear()
 
     save_settings(settings)
 
@@ -208,6 +226,7 @@ def _map_endpoint_through_bookmarks(ctx, param, value):
         logger.debug(
             f"No bookmark for endpoint {value}, assuming it is an actual endpoint id"
         )
+        return value
 
 
 # ENDPOINT COMMANDS
@@ -245,11 +264,14 @@ def endpoints(settings, limit):
 def info(settings, endpoint):
     """
     Display full information about an endpoint.
+
+    Although mostly intended for human consumption, the output is valid JSON.
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     info = EndpointInfo.get(tc, endpoint)
-    click.echo(info._response)
+
+    click.echo(info)
 
 
 DEFAULT_HISTORY_HEADERS = [
@@ -310,6 +332,9 @@ LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 def ls(settings, endpoint, path):
     """
     List the directory contents of a path on an endpoint.
+
+    This command is intended to produce human-readable output. The "manifest"
+    command is more useful as part of a workflow.
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
@@ -343,6 +368,10 @@ def ls(settings, endpoint, path):
 def manifest(settings, endpoint, path, verbose):
     """
     Print a JSON manifest of directory contents on an endpoint.
+
+    The manifest can be printed in verbose, human-readable JSON or in compact,
+    hard-for-humans JSON. Use --compact if you are worried about the size of
+    the manifest. Otherwise, use --verbose (which is the default).
     """
     if verbose:
         json_dumps_kwargs = dict(indent=2)
@@ -390,11 +419,11 @@ def wait_args(func):
             "--attempts",
             type=int,
             default=1,
-            help="How many times to try waiting. Defaults to 1.",
+            help="How many times to try waiting. Defaults to 1 attempt.",
         ),
     ]
 
-    for d in decorators:
+    for d in reversed(decorators):
         func = d(func)
 
     return func
@@ -579,7 +608,7 @@ def activate_endpoint_or_exit(transfer_client, endpoint):
     if not success:
         logger.error(f"Was not able to activate endpoint {endpoint}")
         click.echo(f"ERROR: was not able to activate endpoint {endpoint}", err=True)
-        sys.exit(ACTIVATION_ERROR)
+        sys.exit(ENDPOINT_ACTIVATION_ERROR)
 
     expires_in = EndpointInfo.get(transfer_client, endpoint).activation_expires_in
     logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
@@ -724,9 +753,22 @@ class EndpointInfo:
     def __init__(self, response):
         self._response = response
 
+    def __str__(self):
+        return str(self._response)
+
     @classmethod
     def get(cls, transfer_client, endpoint):
-        return cls(transfer_client.get_endpoint(endpoint))
+        try:
+            response = transfer_client.get_endpoint(endpoint)
+        except globus_sdk.TransferAPIError as e:
+            logger.error(f"Could not get endpoint info")
+            click.echo(
+                f"ERROR: was not able to get endpoint info due to error: {e.message}",
+                err=True,
+            )
+            sys.exit(ENDPOINT_INFO_ERROR)
+
+        return cls(response)
 
     def __getitem__(self, item):
         return self._response[item]
