@@ -124,7 +124,7 @@ def enable_autocomplete(shell, force, destination):
     """
     Enable autocompletion for the shell of your choice.
 
-    Should only need to be run once for each shell.
+    This command should only need to be run once for each shell.
 
     Note that your Python
     environment must be available (i.e., running "globus" must work) by the time
@@ -145,12 +145,12 @@ def enable_autocomplete(shell, force, destination):
         ),
     }[shell]
 
+    if destination is not None:
+        dst = Path(destination)
+
     if not force and cmd in dst.read_text():
         click.secho(f"Autocompletion already enabled for {shell}", fg="yellow")
         return
-
-    if destination is not None:
-        dst = Path(destination)
 
     with dst.open(mode="a") as f:
         f.write(f"\n# enable globus-transfer autocompletion\n{cmd}\n")
