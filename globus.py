@@ -114,7 +114,22 @@ def upgrade(version, dry):
     default=False,
     help="Append the autocompletion activation command even if it already exists.",
 )
-def enable_autocomplete(shell, force):
+@click.option(
+    "--destination",
+    type=click.Path(dir_okay=False, writable=True, resolve_path=True),
+    default=None,
+    help="Append the autocompletion activation command to this file instead of the shell default.",
+)
+def enable_autocomplete(shell, force, destination):
+    """
+    Enable autocompletion for the shell of your choice.
+
+    Should only need to be run once for each shell.
+
+    Note that your Python
+    environment must be available (i.e., running "globus" must work) by the time
+    the autocompletion-enabling command runs in your shell configuration file.
+    """
     cmd, dst = {
         "bash": (
             r'eval "$(_GLOBUS_COMPLETE=source_bash globus)"',
@@ -131,11 +146,19 @@ def enable_autocomplete(shell, force):
     }[shell]
 
     if not force and cmd in dst.read_text():
-        click.secho(f"Autocompletion already enabled for {shell}", fg="green")
+        click.secho(f"Autocompletion already enabled for {shell}", fg="yellow")
         return
+
+    if destination is not None:
+        dst = Path(destination)
 
     with dst.open(mode="a") as f:
         f.write(f"\n# enable globus-transfer autocompletion\n{cmd}\n")
+
+    click.secho(
+        f"Autocompletion enabled for {shell} (startup command added to {dst})",
+        fg="green",
+    )
 
 
 @cli.command()
