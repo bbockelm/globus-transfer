@@ -25,7 +25,8 @@ ENDPOINT_INFO_ERROR = 1
 INVALID_TRANSFER_SPECIFICATION_ERROR = 1
 CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
-WAIT_TASK_TIMEOUT = 2
+WAIT_TASK_TIMEOUT = 5
+UPGRADE_ERROR = 1
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
@@ -90,15 +91,18 @@ def upgrade(version, dry):
     ]
 
     if dry:
-        click.echo(" ".join(cmd))
+        click.secho(" ".join(cmd))
         return
 
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     if p.returncode != 0:
-        click.echo("ERROR: Upgrade failed. Output from command reproduced below.")
-        click.echo(f"Command was: {' '.join(cmd)}")
-        click.echo(p.stdout, color="red")
+        error(
+            f"Upgrade failed! Output from command '{' '.join(cmd)}' reproduced below:\n{p.stdout}\n{p.stderr}",
+            exit_code=UPGRADE_ERROR,
+        )
+
+    click.secho("Upgraded successfully", fg="green")
 
 
 @cli.command()
@@ -172,7 +176,7 @@ def settings(settings, as_toml):
     """
     Display the current settings.
     """
-    click.echo(toml.dumps(settings) if as_toml else pprint.pformat(settings))
+    click.secho(toml.dumps(settings) if as_toml else pprint.pformat(settings))
 
 
 @cli.command()
@@ -185,9 +189,8 @@ def login(settings):
         refresh_token = acquire_refresh_token()
         logger.debug("Acquired refresh token")
     except globus_sdk.AuthAPIError as e:
-        logger.error(f"Was not able to authorize {e.args[-1]}")
-        click.echo(f"ERROR: was not able to authorize", err=True)
-        sys.exit(AUTHORIZATION_ERROR)
+        logger.error(f"Was not able to authorize due to error: {e}")
+        error("Was not able to authorize", exit_code=AUTHORIZATION_ERROR)
 
     settings[AUTH][REFRESH_TOKEN] = refresh_token
 
@@ -258,7 +261,7 @@ def ls(settings):
     """
     rows = [{"bookmark": k, "endpoint": v} for k, v in settings[BOOKMARKS].items()]
 
-    click.echo(
+    click.secho(
         table(
             headers=["bookmark", "endpoint"],
             rows=rows,
@@ -302,11 +305,11 @@ def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
-    click.echo(
+    click.secho(
         table(
             headers=DEFAULT_ENDPOINTS_HEADERS,
             rows=endpoints,
@@ -315,7 +318,7 @@ def endpoints(settings, limit):
         )
     )
 
-    click.echo("\nWeb View: https://app.globus.org/endpoints")
+    click.secho("\nWeb View: https://app.globus.org/endpoints")
 
 
 @cli.command()
@@ -327,11 +330,11 @@ def info(settings, endpoint):
 
     Although mostly intended for human consumption, the output is valid JSON.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
-    info = EndpointInfo.get(tc, endpoint)
+    info = EndpointInfo.get_or_exit(tc, endpoint)
 
-    click.echo(info)
+    click.secho(info)
 
 
 DEFAULT_HISTORY_HEADERS = [
@@ -358,13 +361,13 @@ def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
             task.pop("label")
 
-    click.echo(
+    click.secho(
         table(
             headers=DEFAULT_HISTORY_HEADERS,
             rows=tasks,
@@ -373,7 +376,7 @@ def history(settings, limit):
             style=history_style,
         )
     )
-    click.echo("\nWeb View: https://app.globus.org/activity?show=history")
+    click.secho("\nWeb View: https://app.globus.org/activity?show=history")
 
 
 DEFAULT_LS_HEADERS = ["DATA_TYPE", "name", "size"]
@@ -396,12 +399,12 @@ def ls(settings, endpoint, path):
     This command is intended to produce human-readable output. The "manifest"
     command is more useful as part of a workflow.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
     entries = list(tc.operation_ls(endpoint, path=path))
-    click.echo(
+    click.secho(
         table(
             headers=DEFAULT_LS_HEADERS,
             rows=entries,
@@ -438,12 +441,12 @@ def manifest(settings, endpoint, path, verbose):
     else:
         json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
 
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
     entries = list(tc.operation_ls(endpoint, path=path))
-    click.echo(json.dumps(entries, **json_dumps_kwargs))
+    click.secho(json.dumps(entries, **json_dumps_kwargs))
 
 
 @cli.command()
@@ -453,7 +456,7 @@ def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -533,7 +536,7 @@ def transfer(
     If --wait is passed, this command will also wait for the task to finish
     (see the wait command itself for the semantics of this mode; run "globus wait --help").
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -545,11 +548,10 @@ def transfer(
             tdata.add_item(src, dst, recursive=True)
         elif src[-1] == "/" or dst[-1] == "/":  # malformed directory transfer
             logger.error(f"Invalid transfer specification: {t}")
-            click.echo(
-                f"ERROR: invalid transfer specification '{t}' (if transferring directories, both paths must end with /)",
-                err=True,
+            error(
+                f"Invalid transfer specification '{t}' (if transferring directories, both paths must end with /)",
+                exit_code=INVALID_TRANSFER_SPECIFICATION_ERROR,
             )
-            sys.exit(INVALID_TRANSFER_SPECIFICATION_ERROR)
         else:  # file -> file
             logger.debug(f"Transfer file {src} -> {dst}")
             tdata.add_item(src, dst)
@@ -569,7 +571,7 @@ def transfer(
             max_attempts=attempts,
         )
 
-    click.echo(task_id)
+    click.secho(task_id)
 
 
 # TODO: how do we check for transfer errors? e.g., directories without trailing slashes, path not existing, etc.
@@ -582,26 +584,25 @@ def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
     except globus_sdk.TransferAPIError as e:
-        logger.exception(f"Task {task_id} was not successfully cancelled.")
-        click.echo(
-            f"ERROR: Task {task_id} was not successfully cancelled: {e.message}",
-            err=True,
+        logger.exception(f"Task {task_id} was not successfully cancelled")
+        error(
+            f"Task {task_id} was not successfully cancelled: {e.message}",
+            exit_code=CANCEL_TASK_ERROR,
         )
-        sys.exit(CANCEL_TASK_ERROR)
 
     if result["code"] == "Cancelled":
-        click.echo(f"Task {task_id} has been successfully cancelled.")
+        click.secho(f"Task {task_id} has been successfully cancelled", fg="green")
     else:
         logger.error(f"Task {task_id} was not successfully cancelled:\n{result}")
-        click.echo(
-            f"ERROR: Task {task_id} was not successfully cancelled:\n{result}", err=True
+        error(
+            f"Task {task_id} was not successfully cancelled:\n{result}",
+            exit_code=CANCEL_TASK_ERROR,
         )
-        sys.exit(CANCEL_TASK_ERROR)
 
 
 @cli.command()
@@ -612,7 +613,7 @@ def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
 
     wait_for_task_or_exit(
         transfer_client=tc,
@@ -622,7 +623,7 @@ def wait(settings, task_id, timeout, interval, attempts):
         max_attempts=attempts,
     )
 
-    click.echo(task_id)
+    click.secho(task_id)
 
 
 # CLI HELPERS
@@ -647,12 +648,11 @@ def setup_logging(verbose):
 
 def get_transfer_client_or_exit(refresh_token):
     if refresh_token is None:
-        logger.error(f"No refresh token found in settings")
-        click.echo(
-            f"ERROR: was not able to find a refresh token; have you run 'globus login'?",
-            err=True,
+        logger.error(f"No refresh token found in settings.")
+        error(
+            f"Was not able to find a refresh token; have you run 'globus login'?",
+            exit_code=AUTHORIZATION_ERROR,
         )
-        sys.exit(AUTHORIZATION_ERROR)
 
     client = get_client()
     authorizer = globus_sdk.RefreshTokenAuthorizer(refresh_token, client)
@@ -661,16 +661,18 @@ def get_transfer_client_or_exit(refresh_token):
 
 def activate_endpoint_or_exit(transfer_client, endpoint):
     success = (
-        EndpointInfo.get(transfer_client, endpoint).is_active
+        EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
         or activate_endpoint_automatically(transfer_client, endpoint)
         or activate_endpoint_manually(transfer_client, endpoint)
     )
     if not success:
-        logger.error(f"Was not able to activate endpoint {endpoint}")
-        click.echo(f"ERROR: was not able to activate endpoint {endpoint}", err=True)
-        sys.exit(ENDPOINT_ACTIVATION_ERROR)
+        msg = f"Was not able to activate endpoint {endpoint}"
+        logger.error(msg)
+        error(msg, exit_code=ENDPOINT_ACTIVATION_ERROR)
 
-    expires_in = EndpointInfo.get(transfer_client, endpoint).activation_expires_in
+    expires_in = EndpointInfo.get_or_exit(
+        transfer_client, endpoint
+    ).activation_expires_in
     logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
     return True
 
@@ -692,10 +694,7 @@ def wait_for_task_or_exit(
             )
         except globus_sdk.TransferAPIError as e:
             logger.exception(f"Could not wait for task {task_id}.")
-            click.echo(
-                f"WARNING: Could not wait for task {task_id} due to error: {e.message}",
-                err=True,
-            )
+            warning(f"Could not wait for task {task_id} due to error: {e.message}",)
             errored = True
 
         if done:
@@ -704,14 +703,9 @@ def wait_for_task_or_exit(
         logger.debug(f"Attempt {attempts} to wait for task {task_id} failed")
 
         if attempts >= max_attempts:
-            logger.error(
-                f"Timed out waiting for task {task_id} after {attempts} attempts."
-            )
-            click.echo(
-                f"ERROR: Timed out waiting for task {task_id} after {attempts} attempts.",
-                err=True,
-            )
-            sys.exit(WAIT_TASK_TIMEOUT if not errored else WAIT_TASK_ERROR)
+            msg = f"Timed out waiting for task {task_id} after {attempts} attempts."
+            logger.error(msg)
+            error(msg, exit_code=WAIT_TASK_TIMEOUT if not errored else WAIT_TASK_ERROR)
 
 
 def table(
@@ -733,7 +727,7 @@ def table(
 
     processed_rows = []
     for row in rows:
-        processed_rows.append([str(row.get(key, fill)) for key in headers])
+        processed_rows.append([str(row.get_or_exit(key, fill)) for key in headers])
 
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
@@ -761,6 +755,19 @@ def table(
     return output
 
 
+def warning(msg):
+    click.secho(
+        f"Warning: {msg}", err=True, fg="yellow",
+    )
+
+
+def error(msg, exit_code=1):
+    click.secho(
+        f"Error: {msg}", err=True, fg="red",
+    )
+    sys.exit(exit_code)
+
+
 # BACKEND
 
 
@@ -772,8 +779,10 @@ def acquire_refresh_token():
     client = get_client()
     client.oauth2_start_flow(refresh_tokens=True)
 
-    click.echo(f"Go to this URL and login: {client.oauth2_get_authorize_url()}")
-    auth_code = click.prompt("Copy the code you get after login here").strip()
+    click.secho(f"Go to this URL and login: {client.oauth2_get_authorize_url()}")
+    auth_code = click.prompt(
+        "Copy the code you get after login here and press enter"
+    ).strip()
 
     token_response = client.oauth2_exchange_code_for_tokens(auth_code)
 
@@ -817,16 +826,15 @@ class EndpointInfo:
         return str(self._response)
 
     @classmethod
-    def get(cls, transfer_client, endpoint):
+    def get_or_exit(cls, transfer_client, endpoint):
         try:
             response = transfer_client.get_endpoint(endpoint)
         except globus_sdk.TransferAPIError as e:
-            logger.error(f"Could not get endpoint info")
-            click.echo(
-                f"ERROR: was not able to get endpoint info due to error: {e.message}",
-                err=True,
+            logger.exception(f"Could not get endpoint info")
+            error(
+                f"Was not able to get endpoint info due to error: {e.message}",
+                exit_code=ENDPOINT_INFO_ERROR,
             )
-            sys.exit(ENDPOINT_INFO_ERROR)
 
         return cls(response)
 
@@ -854,13 +862,13 @@ def activate_endpoint_automatically(transfer_client, endpoint):
 
 def activate_endpoint_manually(transfer_client, endpoint):
     query_string = urlencode(
-        {"origin_id": EndpointInfo.get(transfer_client, endpoint).id}
+        {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
     )
-    click.echo(
+    click.secho(
         f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
     )
     click.confirm("Press ENTER after activating the endpoint...", show_default=False)
-    return EndpointInfo.get(transfer_client, endpoint).is_active
+    return EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
 
 
 if __name__ == "__main__":
