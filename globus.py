@@ -103,6 +103,66 @@ def upgrade(version, dry):
 
 @cli.command()
 @click.option(
+    "--shell",
+    required=True,
+    type=click.Choice(["bash", "zsh", "fish"], case_sensitive=False),
+    help="Which shell program to enable autocompletion for.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Append the autocompletion activation command even if it already exists.",
+)
+@click.option(
+    "--destination",
+    type=click.Path(dir_okay=False, writable=True, resolve_path=True),
+    default=None,
+    help="Append the autocompletion activation command to this file instead of the shell default.",
+)
+def enable_autocomplete(shell, force, destination):
+    """
+    Enable autocompletion for the shell of your choice.
+
+    This command should only need to be run once for each shell.
+
+    Note that your Python
+    environment must be available (i.e., running "globus" must work) by the time
+    the autocompletion-enabling command runs in your shell configuration file.
+    """
+    cmd, dst = {
+        "bash": (
+            r'eval "$(_GLOBUS_COMPLETE=source_bash globus)"',
+            Path.home() / ".bashrc",
+        ),
+        "zsh": (
+            r'eval "$(_GLOBUS_COMPLETE=source_zsh globus)"',
+            Path.home() / ".zshrc",
+        ),
+        "fish": (
+            r"eval (env _GLOBUS_COMPLETE=source_fish foo-bar)",
+            Path.home() / ".config" / "fish" / "completions" / "globus.fish",
+        ),
+    }[shell]
+
+    if destination is not None:
+        dst = Path(destination)
+
+    if not force and cmd in dst.read_text():
+        click.secho(f"Autocompletion already enabled for {shell}", fg="yellow")
+        return
+
+    with dst.open(mode="a") as f:
+        f.write(f"\n# enable globus-transfer autocompletion\n{cmd}\n")
+
+    click.secho(
+        f"Autocompletion enabled for {shell} (startup command added to {dst})",
+        fg="green",
+    )
+
+
+@cli.command()
+@click.option(
     "--as-toml/--as-dict",
     default=True,
     help="Display as original on-disk TOML or as the internal Python dictionary.",
