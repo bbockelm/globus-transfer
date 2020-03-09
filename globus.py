@@ -40,6 +40,10 @@ REFRESH_TOKEN = "refresh_token"
 
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
+
+AS_JOB = "--as-job"
+
+
 # CLI
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -53,8 +57,13 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     default=0,
     help="Show log messages as the CLI runs. Pass more times for more verbosity.",
 )
+@click.option(
+    AS_JOB,
+    is_flag=True,
+    help="Produce an HTCondor submit description that would execute the command as a job, instead of actually performing the command.",
+)
 @click.pass_context
-def cli(context, verbose):
+def cli(context, verbose, as_job):
     """
     Initial setup: run 'globus login' and following the printed instructions.
     """
@@ -63,6 +72,24 @@ def cli(context, verbose):
     context.obj = load_settings()
 
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
+
+    if as_job:
+        exe, *args = sys.argv
+        desc = f"""
+           universe = local
+           executable = {exe}
+           arguments = {" ".join((arg for arg in args if arg != AS_JOB))}
+           log = {'globus_job_$(CLUSTER)_$(PROCESS).log'}
+           output = {'globus_job_$(CLUSTER)_$(PROCESS).out'}
+           error = {'globus_job_$(CLUSTER)_$(PROCESS).err'}
+           request_cpus = 1
+           request_memory = 200MB
+           request_disk = 1GB
+
+           queue 1
+           """
+        click.secho(textwrap.dedent(desc).lstrip())
+        sys.exit(0)
 
 
 # SETTINGS COMMANDS
@@ -493,9 +520,6 @@ def wait_args(func):
     return func
 
 
-AS_JOB = "--as-job"
-
-
 @cli.command()
 @endpoint_arg("source_endpoint")
 @endpoint_arg("destination_endpoint")
@@ -505,11 +529,6 @@ AS_JOB = "--as-job"
     "--wait", is_flag=True, help="If passed, wait for the transfer to complete."
 )
 @wait_args
-@click.option(
-    AS_JOB,
-    is_flag=True,
-    help="Produce an HTCondor submit description that would execute the transfer, instead of actually performing the transfer.",
-)
 @click.pass_obj
 def transfer(
     settings,
@@ -521,7 +540,6 @@ def transfer(
     timeout,
     interval,
     attempts,
-    as_job,
 ):
     """
     Initiate a file transfer task.
@@ -546,24 +564,6 @@ def transfer(
     If --wait is passed, this command will also wait for the task to finish
     (see the wait command itself for the semantics of this mode; run "globus wait --help").
     """
-    if as_job:
-        exe, *args = sys.argv
-        desc = f"""
-        universe = local
-        executable = {exe}
-        arguments = {" ".join((arg for arg in args if arg != AS_JOB))}
-        log = {'transfer_job_$(CLUSTER)_$(PROCESS).log'}
-        output = {'transfer_job_$(CLUSTER)_$(PROCESS).out'}
-        error = {'transfer_job_$(CLUSTER)_$(PROCESS).err'}
-        request_cpus = 1
-        request_memory = 200MB
-        request_disk = 1GB
-
-        queue 1
-        """
-        click.secho(textwrap.dedent(desc).lstrip())
-        return
-
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
