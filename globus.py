@@ -306,7 +306,7 @@ def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
@@ -331,7 +331,7 @@ def info(settings, endpoint):
 
     Although mostly intended for human consumption, the output is valid JSON.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
@@ -362,7 +362,7 @@ def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -400,7 +400,7 @@ def ls(settings, endpoint, path):
     This command is intended to produce human-readable output. The "manifest"
     command is more useful as part of a workflow.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -442,7 +442,7 @@ def manifest(settings, endpoint, path, verbose):
     else:
         json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
 
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -457,7 +457,7 @@ def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -552,11 +552,19 @@ def transfer(
         universe = local
         executable = {exe}
         arguments = {" ".join((arg for arg in args if arg != AS_JOB))}
+        log = {'transfer_job_$(CLUSTER)_$(PROCESS).log'}
+        output = {'transfer_job_$(CLUSTER)_$(PROCESS).out'}
+        error = {'transfer_job_$(CLUSTER)_$(PROCESS).err'}
+        request_cpus = 1
+        request_memory = 200MB
+        request_disk = 1GB
+
+        queue 1
         """
         click.secho(textwrap.dedent(desc).lstrip())
         return
 
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -604,7 +612,7 @@ def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
@@ -633,7 +641,7 @@ def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     wait_for_task_or_exit(
         transfer_client=tc,
@@ -747,7 +755,7 @@ def table(
 
     processed_rows = []
     for row in rows:
-        processed_rows.append([str(row.get_or_exit(key, fill)) for key in headers])
+        processed_rows.append([str(row.get(key, fill)) for key in headers])
 
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
