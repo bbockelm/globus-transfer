@@ -63,7 +63,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     help="Produce an HTCondor submit description that would execute the command as a job, instead of actually performing the command.",
 )
 @click.pass_context
-def cli(context, verbose, as_job):
+def cli(context, verbose, as_submit_description):
     """
     Initial setup: run 'globus login' and following the printed instructions.
     """
@@ -73,21 +73,33 @@ def cli(context, verbose, as_job):
 
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
 
-    if as_job:
+    if as_submit_description:
         exe, *args = sys.argv
+        args_string = " ".join((arg for arg in args if arg != AS_JOB))
         desc = f"""
-           universe = local
-           executable = {exe}
-           arguments = {" ".join((arg for arg in args if arg != AS_JOB))}
-           log = {'globus_job_$(CLUSTER)_$(PROCESS).log'}
-           output = {'globus_job_$(CLUSTER)_$(PROCESS).out'}
-           error = {'globus_job_$(CLUSTER)_$(PROCESS).err'}
-           request_cpus = 1
-           request_memory = 200MB
-           request_disk = 1GB
+            universe = local
 
-           queue 1
-           """
+            executable = {exe}
+            arguments = {args_string}
+
+            log = {'globus_job_$(CLUSTER)_$(PROCESS).log'}
+            output = {'globus_job_$(CLUSTER)_$(PROCESS).out'}
+            error = {'globus_job_$(CLUSTER)_$(PROCESS).err'}
+
+            request_cpus = 1
+            request_memory = 200MB
+            request_disk = 1GB
+
+            on_exit_hold = ExitCode =!= 0
+            on_exit_hold_reason = "globus command failed"
+
+            should_transfer_files = NO
+            transfer_executable = False
+
+            +IsGlobusTransferJob = True
+            
+            queue 1
+            """
         click.secho(textwrap.dedent(desc).lstrip())
         sys.exit(0)
 
