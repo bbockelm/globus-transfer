@@ -41,7 +41,7 @@ REFRESH_TOKEN = "refresh_token"
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
 
-AS_JOB = "--as-job"
+AS_JOB = "--as-submit-description"
 
 
 # CLI
