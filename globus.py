@@ -82,9 +82,9 @@ def cli(context, verbose, as_submit_description):
             executable = {exe}
             arguments = {args_string}
 
-            log = {'globus_job_$(CLUSTER)_$(PROCESS).log'}
-            output = {'globus_job_$(CLUSTER)_$(PROCESS).out'}
-            error = {'globus_job_$(CLUSTER)_$(PROCESS).err'}
+            log = 'globus_job_$(CLUSTER)_$(PROCESS).log'
+            output = 'globus_job_$(CLUSTER)_$(PROCESS).out'
+            error = 'globus_job_$(CLUSTER)_$(PROCESS).err'
 
             request_cpus = 1
             request_memory = 200MB
