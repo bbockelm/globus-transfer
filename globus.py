@@ -677,7 +677,7 @@ def cancel(settings, task_id):
             exit_code=CANCEL_TASK_ERROR,
         )
 
-    if result["code"] == "Cancelled":
+    if result["code"] == "Canceled":
         click.secho(f"Task {task_id} has been successfully cancelled", fg="green")
     else:
         logger.error(f"Task {task_id} was not successfully cancelled:\n{result}")
