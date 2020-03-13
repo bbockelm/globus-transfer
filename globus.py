@@ -374,7 +374,7 @@ def info(settings, endpoint):
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
-    click.secho(info)
+    click.secho(str(info))
 
 
 DEFAULT_HISTORY_HEADERS = [
@@ -538,6 +538,22 @@ def wait_args(func):
 @click.argument("transfers", nargs=-1)
 @click.option("--label", help="A label for the transfer.")
 @click.option(
+    "--sync-level",
+    type=click.Choice(["exists", "size", "mtime", "checksum"], case_sensitive=False),
+    default="checksum",
+    help="How to decide whether to actually transfer a file or not. Defaults to checksum.",
+)
+@click.option(
+    "--preserve-timestamps/--no-preserve-timestamps",
+    default=True,
+    help="Whether to preserve file modification timestamps. Defaults to preserve them.",
+)
+@click.option(
+    "--verify-checksums/--no-verify-checksums",
+    default=True,
+    help="Whether to check that file checksums are the same at source and destination after transferring. Defaults to verify. Think very hard before turning this off.",
+)
+@click.option(
     "--wait", is_flag=True, help="If passed, wait for the transfer to complete."
 )
 @wait_args
@@ -548,6 +564,9 @@ def transfer(
     destination_endpoint,
     transfers,
     label,
+    sync_level,
+    preserve_timestamps,
+    verify_checksums,
     wait,
     timeout,
     interval,
@@ -568,18 +587,41 @@ def transfer(
     If both paths end with a / the transfer is interpreted as a directory transfer.
     If neither ends with a / it is a single file transfer.
     (Both paths must either end or not end with /, mixing them is an error.)
-    Paths should be absolute; to expand the user's home directory on either side, wrap the transfer
-    specification in single quotes to prevent local expansion:
+    Paths should be absolute; to expand the user's home directory on either
+    side, wrap the transfer specification in single quotes to prevent local
+    variable expansion:
 
-        '~/path/to/source/file':'~/path/to/destination/file'
+        '~/path/to/source/dir/':'~/path/to/destination/dir/'
+
+    The synchronization level determines whether individual files are actually
+    transferred, as follows:
+
+        exists: if the destination file is absent.
+
+        size: if destination file size does not match the source.
+
+        mtime: if the source file has a newer modified time than the destination file.
+
+        checksum: if the checksum of the contents of the source and destination files differ.
+
+    The default synchronization level is checksum. Stricter levels imply
+    less-strict levels (i.e., checksum synchronization implies existence checking).
 
     If --wait is passed, this command will also wait for the task to finish
-    (see the wait command itself for the semantics of this mode; run "globus wait --help").
+    instead of immediately returning
+    (see the wait command itself for the semantics of this mode and descriptions
+    of the accompanying options; run "globus wait --help").
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
-        tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
+        tc,
+        source_endpoint,
+        destination_endpoint,
+        label=label,
+        sync_level=sync_level,
+        preserve_timestamp=preserve_timestamps,
+        verify_checksum=verify_checksums,
     )
     for t in transfers:
         src, dst = t.split(":")
@@ -635,7 +677,7 @@ def cancel(settings, task_id):
             exit_code=CANCEL_TASK_ERROR,
         )
 
-    if result["code"] == "Cancelled":
+    if result["code"] == "Canceled":
         click.secho(f"Task {task_id} has been successfully cancelled", fg="green")
     else:
         logger.error(f"Task {task_id} was not successfully cancelled:\n{result}")
@@ -734,7 +776,7 @@ def wait_for_task_or_exit(
             )
         except globus_sdk.TransferAPIError as e:
             logger.exception(f"Could not wait for task {task_id}.")
-            warning(f"Could not wait for task {task_id} due to error: {e.message}",)
+            warning(f"Could not wait for task {task_id} due to error: {e.message}")
             errored = True
 
         if done:
@@ -796,15 +838,11 @@ def table(
 
 
 def warning(msg):
-    click.secho(
-        f"Warning: {msg}", err=True, fg="yellow",
-    )
+    click.secho(f"Warning: {msg}", err=True, fg="yellow")
 
 
 def error(msg, exit_code=1):
-    click.secho(
-        f"Error: {msg}", err=True, fg="red",
-    )
+    click.secho(f"Error: {msg}", err=True, fg="red")
     sys.exit(exit_code)
 
 
