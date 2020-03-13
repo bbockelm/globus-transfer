@@ -7,6 +7,7 @@ import functools
 import subprocess
 import pprint
 import json
+import textwrap
 
 import click
 from click_didyoumean import DYMGroup
@@ -39,6 +40,10 @@ REFRESH_TOKEN = "refresh_token"
 
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
+
+AS_JOB = "--as-submit-description"
+
+
 # CLI
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -52,8 +57,13 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     default=0,
     help="Show log messages as the CLI runs. Pass more times for more verbosity.",
 )
+@click.option(
+    AS_JOB,
+    is_flag=True,
+    help="Produce an HTCondor submit description that would execute the command as a job, instead of actually performing the command.",
+)
 @click.pass_context
-def cli(context, verbose):
+def cli(context, verbose, as_submit_description):
     """
     Initial setup: run 'globus login' and following the printed instructions.
     """
@@ -62,6 +72,36 @@ def cli(context, verbose):
     context.obj = load_settings()
 
     logger.debug(f'{sys.argv[0]} called with arguments "{" ".join(sys.argv[1:])}"')
+
+    if as_submit_description:
+        exe, *args = sys.argv
+        args_string = " ".join((arg for arg in args if arg != AS_JOB))
+        desc = f"""
+            universe = local
+
+            executable = {exe}
+            arguments = {args_string}
+
+            log = globus_job_$(CLUSTER)_$(PROCESS).log
+            output = globus_job_$(CLUSTER)_$(PROCESS).out
+            error = globus_job_$(CLUSTER)_$(PROCESS).err
+
+            request_cpus = 1
+            request_memory = 200MB
+            request_disk = 1GB
+
+            on_exit_hold = ExitCode =!= 0
+            on_exit_hold_reason = "globus command failed"
+
+            should_transfer_files = NO
+            transfer_executable = False
+
+            +IsGlobusTransferJob = True
+            
+            queue 1
+            """
+        click.secho(textwrap.dedent(desc).lstrip())
+        sys.exit(0)
 
 
 # SETTINGS COMMANDS
@@ -305,7 +345,7 @@ def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
@@ -330,7 +370,7 @@ def info(settings, endpoint):
 
     Although mostly intended for human consumption, the output is valid JSON.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
@@ -361,7 +401,7 @@ def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -399,7 +439,7 @@ def ls(settings, endpoint, path):
     This command is intended to produce human-readable output. The "manifest"
     command is more useful as part of a workflow.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -441,7 +481,7 @@ def manifest(settings, endpoint, path, verbose):
     else:
         json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
 
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -456,7 +496,7 @@ def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     activate_endpoint_or_exit(tc, endpoint)
 
@@ -536,7 +576,7 @@ def transfer(
     If --wait is passed, this command will also wait for the task to finish
     (see the wait command itself for the semantics of this mode; run "globus wait --help").
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc, source_endpoint, destination_endpoint, label=label, sync_level="checksum"
@@ -584,7 +624,7 @@ def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
@@ -613,7 +653,7 @@ def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get_or_exit(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
     wait_for_task_or_exit(
         transfer_client=tc,
@@ -727,7 +767,7 @@ def table(
 
     processed_rows = []
     for row in rows:
-        processed_rows.append([str(row.get_or_exit(key, fill)) for key in headers])
+        processed_rows.append([str(row.get(key, fill)) for key in headers])
 
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
