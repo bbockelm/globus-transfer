@@ -374,7 +374,7 @@ def info(settings, endpoint):
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
-    click.secho(info)
+    click.secho(str(info))
 
 
 DEFAULT_HISTORY_HEADERS = [
