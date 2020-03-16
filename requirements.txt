@@ -1,4 +1,4 @@
 globus-sdk ~= 1.9
-click ~= 7.0
+click ~= 7.1
 click-didyoumean ~= 0.0.3
 toml ~= 0.10.0
