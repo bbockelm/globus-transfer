@@ -263,12 +263,31 @@ def add(settings, bookmark, endpoint):
 
 @bookmarks.command()
 @click.argument("bookmark")
+@click.argument("new_bookmark")
+@click.pass_obj
+def rename(settings, bookmark, new_bookmark):
+    """
+    Rename a bookmark.
+    """
+    try:
+        settings[BOOKMARKS][new_bookmark] = settings[BOOKMARKS].pop(bookmark)
+    except KeyError:
+        error(f"No bookmark found with name {bookmark}")
+
+    save_settings(settings)
+
+
+@bookmarks.command()
+@click.argument("bookmark")
 @click.pass_obj
 def rm(settings, bookmark):
     """
     Remove a bookmark.
     """
-    settings[BOOKMARKS].pop(bookmark)
+    try:
+        settings[BOOKMARKS].pop(bookmark)
+    except KeyError:
+        error(f"No bookmark found with name {bookmark}")
 
     save_settings(settings)
 
