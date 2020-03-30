@@ -731,7 +731,7 @@ def wait(settings, task_id, timeout, interval, attempts):
 
 
 def setup_logging(verbose):
-    if verbose >= 1:
+    if verbose >= 1 or not is_interactive():
         handler = logging.StreamHandler(stream=sys.stderr)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
@@ -745,6 +745,10 @@ def setup_logging(verbose):
         globus_logger = logging.getLogger("globus_sdk")
         globus_logger.setLevel(logging.DEBUG)
         globus_logger.addHandler(handler)
+
+
+def is_interactive():
+    return sys.stdin.isatty()
 
 
 def get_transfer_client_or_exit(refresh_token):
