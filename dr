@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+CONTAINER_TAG='globus-transfer-dev'
+
+set -e
+
+docker run -it --rm --mount type=bind,src="$PWD",dst=/home/jovyan/globus -p 8000:8000 htcondor/htc-scipy-notebook:latest $@

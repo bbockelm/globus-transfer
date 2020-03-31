@@ -8,6 +8,7 @@ import subprocess
 import pprint
 import json
 import textwrap
+import os
 
 import click
 from click_didyoumean import DYMGroup
@@ -15,6 +16,10 @@ from click_didyoumean import DYMGroup
 import toml
 
 import globus_sdk
+
+import htcondor
+import classad
+from htchirp import HTChirp
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -28,6 +33,7 @@ CANCEL_TASK_ERROR = 1
 WAIT_TASK_ERROR = 1
 WAIT_TASK_TIMEOUT = 5
 UPGRADE_ERROR = 1
+NEEDS_USER_INPUT = 2
 
 CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
 
@@ -40,9 +46,7 @@ REFRESH_TOKEN = "refresh_token"
 
 BOLD_HEADER = functools.partial(click.style, bold=True)
 
-
 AS_JOB = "--as-submit-description"
-
 
 # CLI
 
@@ -91,12 +95,13 @@ def cli(context, verbose, as_submit_description):
             request_disk = 1GB
 
             on_exit_hold = ExitCode =!= 0
-            on_exit_hold_reason = "globus command failed"
+            on_exit_hold_reason = "globus command failed; try running `globus held` or looking at job logs for more information"
 
             should_transfer_files = NO
             transfer_executable = False
 
             +IsGlobusTransferJob = True
+            +WantIOProxy = true
             
             queue 1
             """
@@ -460,7 +465,7 @@ def ls(settings, endpoint, path):
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
     entries = list(tc.operation_ls(endpoint, path=path))
     click.secho(
@@ -502,7 +507,7 @@ def manifest(settings, endpoint, path, verbose):
 
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
     entries = list(tc.operation_ls(endpoint, path=path))
     click.secho(json.dumps(entries, **json_dumps_kwargs))
@@ -517,7 +522,7 @@ def activate(settings, endpoint):
     """
     tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
 
 # TRANSFER TASK COMMANDS
@@ -657,8 +662,7 @@ def transfer(
             logger.debug(f"Transfer file {src} -> {dst}")
             tdata.add_item(src, dst)
 
-    activate_endpoint_or_exit(tc, source_endpoint)
-    activate_endpoint_or_exit(tc, destination_endpoint)
+    activate_endpoints_or_exit(tc, [source_endpoint, destination_endpoint])
 
     result = tc.submit_transfer(tdata)
     task_id = result["task_id"]
@@ -741,6 +745,8 @@ def setup_logging(verbose):
         )
         logger.addHandler(handler)
 
+        htcondor.enable_debug()
+
     if verbose >= 2:
         globus_logger = logging.getLogger("globus_sdk")
         globus_logger.setLevel(logging.DEBUG)
@@ -764,21 +770,34 @@ def get_transfer_client_or_exit(refresh_token):
     return globus_sdk.TransferClient(authorizer=authorizer)
 
 
-def activate_endpoint_or_exit(transfer_client, endpoint):
-    success = (
-        EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
-        or activate_endpoint_automatically(transfer_client, endpoint)
-        or activate_endpoint_manually(transfer_client, endpoint)
-    )
-    if not success:
-        msg = f"Was not able to activate endpoint {endpoint}"
+def activate_endpoints_or_exit(transfer_client, endpoints):
+    unactivated_endpoints = [
+        e
+        for e in endpoints
+        if not EndpointInfo.get_or_exit(transfer_client, e).is_active
+    ]
+    unactivated_endpoints = [
+        e
+        for e in unactivated_endpoints
+        if not activate_endpoint_automatically(transfer_client, e)
+    ]
+    unactivated_endpoints = [
+        e
+        for e in unactivated_endpoints
+        if not activate_endpoint_manually(transfer_client, e)
+    ]
+
+    if len(unactivated_endpoints) > 0:
+        msg = f"Was not able to activate endpoints: {' '.join(unactivated_endpoints)}"
         logger.error(msg)
         error(msg, exit_code=ENDPOINT_ACTIVATION_ERROR)
 
-    expires_in = EndpointInfo.get_or_exit(
-        transfer_client, endpoint
-    ).activation_expires_in
-    logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
+    for endpoint in endpoints:
+        expires_in = EndpointInfo.get_or_exit(
+            transfer_client, endpoint
+        ).activation_expires_in
+        logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
+
     return True
 
 
@@ -962,15 +981,61 @@ def activate_endpoint_automatically(transfer_client, endpoint):
 
 
 def activate_endpoint_manually(transfer_client, endpoint):
-    query_string = urlencode(
+    query = urlencode(
         {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
     )
-    click.secho(
-        f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
-    )
-    click.confirm("Press ENTER after activating the endpoint...", show_default=False)
+    url = f"https://app.globus.org/file-manager?{query}"
+
+    msg = f"Endpoint {endpoint} requires manual activation, please open the following URL in a browser to activate the endpoint: {url}"
+    if is_interactive():
+        click.secho(msg)
+        click.confirm(
+            "Press ENTER after activating the endpoint...", show_default=False
+        )
+    else:
+        logger.error(
+            f"Endpoint {endpoint} requires manual activation at URL {url}, but we are not running interactively."
+        )
+
+        key = f"GlobusActivateEndpoint_{endpoint}"
+        set_job_attr(key, msg)
+
     return EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
 
+
+def set_job_attr(key, value):
+    if is_interactive():
+        error("Can't change job attributes when not in a job!")
+
+    scratch_job_ad = classad.parseOne(
+        (Path(os.environ["_CONDOR_SCRATCH_DIR"]) / ".job.ad").read_text()
+    )
+
+    UNIVERSE_TO_SET_ATTR[scratch_job_ad["JobUniverse"]](scratch_job_ad, key, value)
+
+    logger.debug(f"Set job attribute {key} = {value}")
+
+
+def _set_job_attr_vanilla_universe(scratch_job_ad, key, value):
+    with HTChirp() as chirp:
+        chirp.set_job_attr(key, value)
+
+
+def _set_job_attr_local_universe(scratch_job_ad, key, value):
+    job_id = f"{scratch_job_ad['ClusterId']}.{scratch_job_ad['ProcId']}"
+
+    location = htcondor.Collector().locate(htcondor.DaemonTypes.Schedd)
+    logger.debug(location)
+    htcondor.Schedd(location).edit([job_id], key, value)
+
+
+VANILLA_UNIVERSE = 5
+LOCAL_UNIVERSE = 12
+
+UNIVERSE_TO_SET_ATTR = {
+    VANILLA_UNIVERSE: _set_job_attr_vanilla_universe,
+    LOCAL_UNIVERSE: _set_job_attr_local_universe,
+}
 
 if __name__ == "__main__":
     cli()
