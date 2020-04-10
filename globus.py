@@ -100,6 +100,8 @@ def cli(context, verbose, as_submit_description):
             should_transfer_files = NO
             transfer_executable = False
 
+            environment = "HOME=$ENV(HOME)"
+
             +IsGlobusTransferJob = True
             +WantIOProxy = true
             
@@ -731,6 +733,70 @@ def wait(settings, task_id, timeout, interval, attempts):
     click.secho(task_id)
 
 
+GLOBUS_TRANSFER_JOB_CONSTRAINT = "IsGlobusTransferJob"
+
+JOB_STATUS = {1: "IDLE", 2: "RUNNING", 3: "REMOVED", 4: "COMPLETED", 5: "HELD"}
+JOB_STATUS_TO_COLOR = {"IDLE": "yellow", "RUNNING": "green", "HELD": "red"}
+
+ENDPOINT_ACTIVATION_REQUIRED = "GlobusEndpointActivationRequired"
+
+
+@cli.command()
+@click.pass_obj
+def status(settings):
+    """
+    Get information on Globus transfer HTCondor jobs.
+    """
+
+    schedd = htcondor.Schedd()
+    ads = schedd.query(GLOBUS_TRANSFER_JOB_CONSTRAINT)
+    for ad_idx, ad in enumerate(ads):
+        cluster_id = ad["ClusterId"]
+        status = JOB_STATUS[ad["JobStatus"]]
+        status_msg = click.style(
+            f"█ {status}".ljust(10), fg=JOB_STATUS_TO_COLOR.get(status)
+        )
+        click.echo(f"{status_msg} {ad.get('JobBatchName', 'ID: ' + str(cluster_id))}")
+
+        args = ad["Args"]
+        if len(args) > 60:
+            args = args[:60] + " ..."
+
+        data = [f"Cluster ID: {cluster_id}", f"Command: {args}"]
+        for idx, line in enumerate(data):
+            prefix = "├─" if idx != len(data) - 1 else "└─"
+            click.echo(f"{prefix} {line}")
+
+        if ad_idx != len(ads) - 1:
+            click.echo()
+
+
+@cli.command()
+@click.pass_obj
+def release(settings):
+    """
+    Interactively resolve holds on Globus transfer HTCondor jobs.
+    """
+    schedd = htcondor.Schedd()
+    ads = schedd.query(GLOBUS_TRANSFER_JOB_CONSTRAINT)
+    for ad_idx, ad in enumerate(ads):
+        cid = ad["ClusterId"]
+        click.echo(f"Attempting to resolve holds for job {cid}")
+
+        manual_endpoints = [
+            v
+            for k, v in ad.items()
+            if k.startswith(ENDPOINT_ACTIVATION_REQUIRED)
+            and v is not classad.Value.Undefined
+        ]
+        if len(manual_endpoints) > 0:
+            tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+            activate_endpoints_manually(tc, manual_endpoints)
+
+        click.secho(f"Releasing job {cid}", fg="green")
+        schedd.act(htcondor.JobAction.Release, f"ClusterId == {cid}")
+
+
 # CLI HELPERS
 
 
@@ -776,16 +842,12 @@ def activate_endpoints_or_exit(transfer_client, endpoints):
         for e in endpoints
         if not EndpointInfo.get_or_exit(transfer_client, e).is_active
     ]
-    unactivated_endpoints = [
-        e
-        for e in unactivated_endpoints
-        if not activate_endpoint_automatically(transfer_client, e)
-    ]
-    unactivated_endpoints = [
-        e
-        for e in unactivated_endpoints
-        if not activate_endpoint_manually(transfer_client, e)
-    ]
+    unactivated_endpoints = activate_endpoints_automatically(
+        transfer_client, unactivated_endpoints
+    )
+    unactivated_endpoints = activate_endpoints_manually(
+        transfer_client, unactivated_endpoints
+    )
 
     if len(unactivated_endpoints) > 0:
         msg = f"Was not able to activate endpoints: {' '.join(unactivated_endpoints)}"
@@ -974,38 +1036,52 @@ class EndpointInfo:
         return datetime.timedelta(seconds=self["expires_in"])
 
 
-def activate_endpoint_automatically(transfer_client, endpoint):
-    response = transfer_client.endpoint_autoactivate(endpoint)
+def activate_endpoints_automatically(transfer_client, endpoints):
+    unactivated = []
+    for endpoint in endpoints:
+        response = transfer_client.endpoint_autoactivate(endpoint)
 
-    return response["code"] != "AutoActivationFailed"
+        if response["code"] == "AutoActivationFailed":
+            unactivated.append(endpoint)
+
+    return unactivated
 
 
-def activate_endpoint_manually(transfer_client, endpoint):
-    query = urlencode(
-        {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
-    )
-    url = f"https://app.globus.org/file-manager?{query}"
-
-    msg = f"Endpoint {endpoint} requires manual activation, please open the following URL in a browser to activate the endpoint: {url}"
-    if is_interactive():
-        click.secho(msg)
-        click.confirm(
-            "Press ENTER after activating the endpoint...", show_default=False
+def activate_endpoints_manually(transfer_client, endpoints):
+    unactivated = []
+    for idx, endpoint in enumerate(endpoints):
+        query = urlencode(
+            {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
         )
-    else:
-        logger.error(
-            f"Endpoint {endpoint} requires manual activation at URL {url}, but we are not running interactively."
-        )
+        url = f"https://app.globus.org/file-manager?{query}"
 
-        key = f"GlobusActivateEndpoint_{endpoint}"
-        set_job_attr(key, msg)
+        msg = f"Endpoint {endpoint} requires manual activation, please open the following URL in a browser to activate the endpoint: {url}"
+        if is_interactive():
+            while not EndpointInfo.get_or_exit(transfer_client, endpoint).is_active:
+                click.secho(msg)
+                click.confirm(
+                    "Press ENTER after activating the endpoint (or ctrl-c to abort)...",
+                    show_default=False,
+                )
+        else:
+            logger.error(
+                f"Endpoint {endpoint} requires manual activation at URL {url}, but we are not running interactively."
+            )
 
-    return EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
+            key = f"{ENDPOINT_ACTIVATION_REQUIRED}_{idx}"
+            set_job_attr(key, classad.quote(endpoint))
+
+            unactivated.append(endpoint)
+
+    return unactivated
 
 
 def set_job_attr(key, value):
     if is_interactive():
-        error("Can't change job attributes when not in a job!")
+        logger.debug(
+            f"Skipping setting job attribute {key} = {value} because we are not in a job"
+        )
+        return
 
     scratch_job_ad = classad.parseOne(
         (Path(os.environ["_CONDOR_SCRATCH_DIR"]) / ".job.ad").read_text()
@@ -1022,11 +1098,10 @@ def _set_job_attr_vanilla_universe(scratch_job_ad, key, value):
 
 
 def _set_job_attr_local_universe(scratch_job_ad, key, value):
-    job_id = f"{scratch_job_ad['ClusterId']}.{scratch_job_ad['ProcId']}"
-
-    location = htcondor.Collector().locate(htcondor.DaemonTypes.Schedd)
-    logger.debug(location)
-    htcondor.Schedd(location).edit([job_id], key, value)
+    schedd = htcondor.Schedd()
+    c = f"ClusterID == {scratch_job_ad['ClusterId']}"
+    logger.debug(f"calling edit with constraint {c} to set {key} = {value}")
+    schedd.edit(c, key, value)
 
 
 VANILLA_UNIVERSE = 5
