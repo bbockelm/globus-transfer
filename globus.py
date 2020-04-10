@@ -783,15 +783,17 @@ def release(settings):
         cid = ad["ClusterId"]
         click.echo(f"Attempting to resolve holds for job {cid}")
 
-        manual_endpoints = [
-            v
+        manual_endpoints = {
+            v: k
             for k, v in ad.items()
             if k.startswith(ENDPOINT_ACTIVATION_REQUIRED)
             and v is not classad.Value.Undefined
-        ]
+        }
         if len(manual_endpoints) > 0:
             tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
-            activate_endpoints_manually(tc, manual_endpoints)
+            activate_endpoints_manually(tc, manual_endpoints.keys())
+            for k in manual_endpoints.values():
+                set_job_attr(k, classad.Value.Undefined, scratch_ad=ad)
 
         click.secho(f"Releasing job {cid}", fg="green")
         schedd.act(htcondor.JobAction.Release, f"ClusterId == {cid}")
@@ -1076,18 +1078,16 @@ def activate_endpoints_manually(transfer_client, endpoints):
     return unactivated
 
 
-def set_job_attr(key, value):
-    if is_interactive():
-        logger.debug(
-            f"Skipping setting job attribute {key} = {value} because we are not in a job"
+def set_job_attr(key, value, scratch_ad=None):
+    if scratch_ad is None:
+        if is_interactive():
+            error("Setting a job attribute while not in a job requires a scratch ad.")
+
+        scratch_ad = classad.parseOne(
+            (Path(os.environ["_CONDOR_SCRATCH_DIR"]) / ".job.ad").read_text()
         )
-        return
 
-    scratch_job_ad = classad.parseOne(
-        (Path(os.environ["_CONDOR_SCRATCH_DIR"]) / ".job.ad").read_text()
-    )
-
-    UNIVERSE_TO_SET_ATTR[scratch_job_ad["JobUniverse"]](scratch_job_ad, key, value)
+    UNIVERSE_TO_SET_ATTR[scratch_ad["JobUniverse"]](scratch_ad, key, value)
 
     logger.debug(f"Set job attribute {key} = {value}")
 
