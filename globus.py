@@ -17,6 +17,8 @@ import toml
 
 import globus_sdk
 
+import humanize
+
 import htcondor
 import classad
 from htchirp import HTChirp
@@ -83,6 +85,8 @@ def cli(context, verbose, as_submit_description):
         desc = f"""
             universe = local
 
+            JobBatchName = "globus {args_string}"
+
             executable = {exe}
             arguments = {args_string}
 
@@ -104,6 +108,8 @@ def cli(context, verbose, as_submit_description):
 
             +IsGlobusTransferJob = True
             +WantIOProxy = true
+
+            on_exit_remove = false
             
             queue 1
             """
@@ -747,28 +753,34 @@ def status(settings):
     """
     Get information on Globus transfer HTCondor jobs.
     """
-
+    now = datetime.datetime.utcnow()
     schedd = htcondor.Schedd()
     ads = schedd.query(GLOBUS_TRANSFER_JOB_CONSTRAINT)
-    for ad_idx, ad in enumerate(ads):
+    for ad_idx, ad in enumerate(sorted(ads, key=lambda ad: ad["ClusterId"])):
         cluster_id = ad["ClusterId"]
+
         status = JOB_STATUS[ad["JobStatus"]]
         status_msg = click.style(
             f"█ {status}".ljust(10), fg=JOB_STATUS_TO_COLOR.get(status)
         )
-        click.echo(f"{status_msg} {ad.get('JobBatchName', 'ID: ' + str(cluster_id))}")
 
-        args = ad["Args"]
-        if len(args) > 60:
-            args = args[:60] + " ..."
+        last_status_change = datetime.datetime.fromtimestamp(ad["EnteredCurrentStatus"])
+        submitted_at = datetime.datetime.fromtimestamp(ad["QDate"])
 
-        data = [f"Cluster ID: {cluster_id}", f"Command: {args}"]
-        for idx, line in enumerate(data):
-            prefix = "├─" if idx != len(data) - 1 else "└─"
-            click.echo(f"{prefix} {line}")
+        lines = [
+            f"{status_msg} {ad.get('JobBatchName', 'ID: ' + str(cluster_id))}",
+            f"Cluster ID: {cluster_id}",
+            f"Last status change at {last_status_change} UTC ({humanize.naturaldelta(now - last_status_change)} ago)",
+            f"Originally submitted at {submitted_at} UTC ({humanize.naturaldelta(now - submitted_at)} ago)",
+        ]
 
-        if ad_idx != len(ads) - 1:
-            click.echo()
+        # output formatting
+        rows = [lines[0]]
+        for line in lines[1:-1]:
+            rows.append("├─" + line)
+        rows.append("└─" + lines[-1])
+        rows.append("")
+        click.echo("\n".join(rows))
 
 
 @cli.command()
