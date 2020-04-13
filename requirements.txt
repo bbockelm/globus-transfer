@@ -1,6 +1,6 @@
 globus-sdk ~= 1.9
 click ~= 7.1
 click-didyoumean ~= 0.0.3
-humanize == 2.3.0
+humanize ~= 2.3.0
 toml ~= 0.10.0
-htchirp == 1.0
+htchirp ~= 1.0
