@@ -16,7 +16,7 @@ import humanize
 import htcondor
 import classad
 
-from .jobs import get_globus_job_ads, set_job_attr
+from .jobs import get_globus_jobs, set_job_attr
 from .uilts import is_interactive
 from . import constants
 from .endpoints import EndpointInfo
@@ -74,7 +74,7 @@ def cli(context, verbose, as_submit_description):
             request_disk = 1GB
 
             on_exit_hold = ExitCode =!= 0
-            on_exit_hold_reason = "globus command failed; try running `globus held` or looking at job logs for more information"
+            on_exit_hold_reason = "globus command failed; try running `globus release` or looking at job logs for more information"
 
             should_transfer_files = NO
             transfer_executable = False
@@ -715,37 +715,50 @@ def wait(settings, task_id, timeout, interval, attempts):
 
 
 @cli.command()
+@click.option(
+    "--raw", is_flag=True, help="Print raw job ads instead of the pretty display."
+)
 @click.pass_obj
-def status(settings):
+def status(settings, raw):
     """
     Get information on Globus transfer HTCondor jobs.
     """
-    now = datetime.datetime.utcnow()
-    for ad_idx, ad in enumerate(
-        sorted(get_globus_job_ads(), key=lambda ad: ad["ClusterId"])
-    ):
-        cluster_id = ad["ClusterId"]
 
-        status = constants.JOB_STATUS[ad["JobStatus"]]
+    now = datetime.datetime.utcnow()
+    for idx, job in enumerate(sorted(get_globus_jobs(), key=lambda j: j.cluster_id)):
+        if raw:
+            click.echo(str(job))
+            continue
+
         status_msg = click.style(
-            f"█ {status}".ljust(10), fg=constants.JOB_STATUS_TO_COLOR.get(status)
+            f"█ {job.status}".ljust(10),
+            fg=constants.JOB_STATUS_TO_COLOR.get(job.status),
         )
 
-        last_status_change = datetime.datetime.fromtimestamp(ad["EnteredCurrentStatus"])
-        submitted_at = datetime.datetime.fromtimestamp(ad["QDate"])
-
         lines = [
-            f"{status_msg} {ad.get('JobBatchName', 'ID: ' + str(cluster_id))}",
-            f"Cluster ID: {cluster_id}",
-            f"Last status change at {last_status_change} UTC ({humanize.naturaldelta(now - last_status_change)} ago)",
-            f"Originally submitted at {submitted_at} UTC ({humanize.naturaldelta(now - submitted_at)} ago)",
+            f"{status_msg} {job.get('JobBatchName', 'ID: ' + str(job.cluster_id))}"
         ]
 
+        lines.extend(
+            [
+                f"Hold Reason: {job.hold_reason}" if job.is_held else None,
+                f"Cluster ID: {job.cluster_id}",
+                f"Universe: {job.universe}",
+                f"Cron: {click.style('✔', fg = 'green') if job.is_cron else click.style('❌', fg = 'red')}",
+                f"Last status change at {job.status_last_changed_at} UTC ({humanize.naturaldelta(now - job.status_last_changed_at)} ago)",
+                f"Originally submitted at {job.submitted_at} UTC ({humanize.naturaldelta(now - job.submitted_at)} ago)",
+                f"Output: {job.stdout}",
+                f"Error: {job.stderr}",
+                f"Events: {job.log}",
+            ]
+        )
+
         # output formatting
+        lines = list(filter(None, lines))
         rows = [lines[0]]
         for line in lines[1:-1]:
-            rows.append("├─" + line)
-        rows.append("└─" + lines[-1])
+            rows.append("├─ " + line)
+        rows.append("└─ " + lines[-1])
         rows.append("")
         click.echo("\n".join(rows))
 
@@ -757,14 +770,13 @@ def release(settings):
     Interactively resolve holds on Globus transfer HTCondor jobs.
     """
     schedd = htcondor.Schedd()
-    ads = schedd.query(constants.GLOBUS_TRANSFER_JOB_CONSTRAINT)
-    for ad_idx, ad in enumerate(ads):
-        cid = ad["ClusterId"]
-        click.echo(f"Attempting to resolve holds for job {cid}")
+    jobs = get_globus_jobs()
+    for ad_idx, job in enumerate(jobs):
+        click.echo(f"Attempting to resolve holds for job {job.cluster_id}")
 
         manual_endpoints = {
             v: k
-            for k, v in ad.items()
+            for k, v in job.items()
             if k.startswith(constants.ENDPOINT_ACTIVATION_REQUIRED)
             and v is not classad.Value.Undefined
         }
@@ -774,10 +786,10 @@ def release(settings):
             )
             activate_endpoints_manually(tc, manual_endpoints.keys())
             for k in manual_endpoints.values():
-                set_job_attr(k, classad.Value.Undefined, scratch_ad=ad)
+                set_job_attr(k, classad.Value.Undefined, scratch_ad=job.ad)
 
-        click.secho(f"Releasing job {cid}", fg="green")
-        schedd.act(htcondor.JobAction.Release, f"ClusterId == {cid}")
+        click.secho(f"Releasing job {job.cluster_id}", fg="green")
+        schedd.act(htcondor.JobAction.Release, f"ClusterId == {job.cluster_id}")
 
 
 # CLI HELPERS

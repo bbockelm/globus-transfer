@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 import getpass
+import datetime
 
 from . import constants
 from .uilts import is_interactive
@@ -14,12 +15,100 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
-def get_globus_job_ads(user=None):
+def get_globus_jobs(user=None):
     if user is None:
         user = getpass.getuser()
 
     schedd = htcondor.Schedd()
-    return schedd.query(f"IsGlobusJob && Owner == {user}")
+    constraint = f"IsGlobusJob && Owner == {classad.quote(user)}"
+    logger.debug(f"Performing query with constraint {constraint}")
+    return [Job(ad) for ad in schedd.query(constraint)]
+
+
+class Job:
+    def __init__(self, ad: classad.ClassAd):
+        self._ad = ad
+
+    def __getitem__(self, item):
+        return self._ad[item]
+
+    def get(self, item, default=None):
+        return self._ad.get(item, default)
+
+    def items(self):
+        yield from self._ad.items()
+
+    def keys(self):
+        yield from self._ad.keys()
+
+    def values(self):
+        yield from self._ad.values()
+
+    def __str__(self):
+        return str(self._ad)
+
+    @property
+    def cluster_id(self):
+        return self._ad["ClusterId"]
+
+    @property
+    def proc_id(self):
+        return self._ad["ProcId"]
+
+    @property
+    def is_cron(self):
+        return any(
+            self._ad.get(k, False)
+            for k in [
+                "CronMinute",
+                "CronHour",
+                "CronDayOfMonth",
+                "CronMonth",
+                "CronDayOfWeek",
+            ]
+        )
+
+    @property
+    def submitted_at(self):
+        return datetime.datetime.fromtimestamp(self._ad["QDate"])
+
+    @property
+    def status_last_changed_at(self):
+        return datetime.datetime.fromtimestamp(self._ad["EnteredCurrentStatus"])
+
+    @property
+    def status(self):
+        return constants.JOB_STATUS[self._ad["JobStatus"]]
+
+    @property
+    def is_held(self):
+        return self.status == "HELD"
+
+    @property
+    def hold_reason(self):
+        return self._ad["HoldReason"]
+
+    @property
+    def universe(self):
+        return constants.UNIVERSE[self._ad["JobUniverse"]]
+
+    @property
+    def stdout(self):
+        p = Path(self._ad["Out"])
+        if not p.is_absolute():
+            return (Path(self._ad["Iwd"]) / self._ad["Out"]).absolute()
+        return p
+
+    @property
+    def stderr(self):
+        p = Path(self._ad["Err"]).absolute()
+        if not p.is_absolute():
+            return (Path(self._ad["Iwd"]) / self._ad["Err"]).absolute()
+        return p
+
+    @property
+    def log(self):
+        return Path(self._ad["UserLog"]).absolute()
 
 
 def set_job_attr(key, value, scratch_ad=None):
