@@ -4,3 +4,4 @@ click-didyoumean ~= 0.0.3
 humanize ~= 2.3.0
 toml ~= 0.10.0
 htchirp ~= 1.0
+htcondor >= 8.8
