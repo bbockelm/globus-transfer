@@ -1,55 +1,36 @@
 import logging
 import sys
 from pathlib import Path
-from urllib.parse import urlencode
 import datetime
-import functools
 import subprocess
 import pprint
 import json
 import textwrap
+from urllib.parse import urlencode
 
 import click
 from click_didyoumean import DYMGroup
-
 import toml
-
 import globus_sdk
+import humanize
+import htcondor
+import classad
 
-logger = logging.getLogger(__name__)
+from .jobs import get_globus_jobs, set_job_attr
+from .uilts import is_interactive
+from . import constants
+from .endpoints import EndpointInfo
+from .formatting import table
+from .settings import save_settings, load_settings
+
+logger = logging.getLogger("globus")
 logger.setLevel(logging.DEBUG)
-logger.addHandler(logging.NullHandler())
-
-AUTHORIZATION_ERROR = 1
-ENDPOINT_ACTIVATION_ERROR = 1
-ENDPOINT_INFO_ERROR = 1
-INVALID_TRANSFER_SPECIFICATION_ERROR = 1
-CANCEL_TASK_ERROR = 1
-WAIT_TASK_ERROR = 1
-WAIT_TASK_TIMEOUT = 5
-UPGRADE_ERROR = 1
-
-CLIENT_ID = "fbb557b2-aa0b-42e9-9a07-04c5c4f01474"
-
-GIT_REPO_URL = "https://github.com/JoshKarpel/globus-transfer"
-
-SETTINGS_FILE_DEFAULT_PATH = Path.home() / ".globus_transfer_settings"
-AUTH = "auth"
-BOOKMARKS = "bookmarks"
-REFRESH_TOKEN = "refresh_token"
-
-BOLD_HEADER = functools.partial(click.style, bold=True)
-
-
-AS_JOB = "--as-submit-description"
 
 
 # CLI
 
-CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
-
-@click.group(context_settings=CONTEXT_SETTINGS, cls=DYMGroup)
+@click.group(context_settings=constants.CONTEXT_SETTINGS, cls=DYMGroup)
 @click.option(
     "--verbose",
     "-v",
@@ -58,7 +39,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     help="Show log messages as the CLI runs. Pass more times for more verbosity.",
 )
 @click.option(
-    AS_JOB,
+    constants.AS_JOB,
     is_flag=True,
     help="Produce an HTCondor submit description that would execute the command as a job, instead of actually performing the command.",
 )
@@ -75,9 +56,11 @@ def cli(context, verbose, as_submit_description):
 
     if as_submit_description:
         exe, *args = sys.argv
-        args_string = " ".join((arg for arg in args if arg != AS_JOB))
+        args_string = " ".join((arg for arg in args if arg != constants.AS_JOB))
         desc = f"""
             universe = local
+
+            JobBatchName = "globus {args_string}"
 
             executable = {exe}
             arguments = {args_string}
@@ -91,12 +74,19 @@ def cli(context, verbose, as_submit_description):
             request_disk = 1GB
 
             on_exit_hold = ExitCode =!= 0
-            on_exit_hold_reason = "globus command failed"
+            on_exit_hold_reason = "globus command failed; try running `globus release` or looking at job logs for more information"
 
             should_transfer_files = NO
             transfer_executable = False
 
-            +IsGlobusTransferJob = True
+            environment = "HOME=$ENV(HOME)"
+
+            +IsGlobusJob = True
+            +IsTransferJob = {'transfer' in args_string}
+            +WantIOProxy = True
+
+            cron_prep_time = 300
+            cron_window = 300
             
             queue 1
             """
@@ -127,7 +117,7 @@ def upgrade(version, dry):
         "install",
         "--user",
         "--upgrade",
-        f"git+{GIT_REPO_URL}.git@{version}",
+        f"git+{constants.GIT_REPO_URL}.git@{version}",
     ]
 
     if dry:
@@ -139,7 +129,7 @@ def upgrade(version, dry):
     if p.returncode != 0:
         error(
             f"Upgrade failed! Output from command '{' '.join(cmd)}' reproduced below:\n{p.stdout}\n{p.stderr}",
-            exit_code=UPGRADE_ERROR,
+            exit_code=constants.UPGRADE_ERROR,
         )
 
     click.secho("Upgraded successfully", fg="green")
@@ -230,9 +220,9 @@ def login(settings):
         logger.debug("Acquired refresh token")
     except globus_sdk.AuthAPIError as e:
         logger.error(f"Was not able to authorize due to error: {e}")
-        error("Was not able to authorize", exit_code=AUTHORIZATION_ERROR)
+        error("Was not able to authorize", exit_code=constants.AUTHORIZATION_ERROR)
 
-    settings[AUTH][REFRESH_TOKEN] = refresh_token
+    settings[constants.AUTH][constants.REFRESH_TOKEN] = refresh_token
 
     save_settings(settings)
 
@@ -256,7 +246,7 @@ def add(settings, bookmark, endpoint):
     Once a bookmark is set, that name can be used in place of an endpoint id
     argument in any other command.
     """
-    settings[BOOKMARKS][bookmark] = endpoint
+    settings[constants.BOOKMARKS][bookmark] = endpoint
 
     save_settings(settings)
 
@@ -270,7 +260,9 @@ def rename(settings, bookmark, new_bookmark):
     Rename a bookmark.
     """
     try:
-        settings[BOOKMARKS][new_bookmark] = settings[BOOKMARKS].pop(bookmark)
+        settings[constants.BOOKMARKS][new_bookmark] = settings[constants.BOOKMARKS].pop(
+            bookmark
+        )
     except KeyError:
         error(f"No bookmark found with name {bookmark}")
 
@@ -285,7 +277,7 @@ def rm(settings, bookmark):
     Remove a bookmark.
     """
     try:
-        settings[BOOKMARKS].pop(bookmark)
+        settings[constants.BOOKMARKS].pop(bookmark)
     except KeyError:
         error(f"No bookmark found with name {bookmark}")
 
@@ -304,12 +296,9 @@ def clear(settings):
         default=False,
     )
 
-    settings[BOOKMARKS].clear()
+    settings[constants.BOOKMARKS].clear()
 
     save_settings(settings)
-
-
-BOOKMARKS_LS_COLUMN_ALIGNMENTS = {"endpoint": "ljust", "bookmark": "ljust"}
 
 
 @bookmarks.command()
@@ -318,14 +307,16 @@ def ls(settings):
     """
     List endpoint bookmarks.
     """
-    rows = [{"bookmark": k, "endpoint": v} for k, v in settings[BOOKMARKS].items()]
+    rows = [
+        {"bookmark": k, "endpoint": v} for k, v in settings[constants.BOOKMARKS].items()
+    ]
 
     click.secho(
         table(
             headers=["bookmark", "endpoint"],
             rows=rows,
-            header_fmt=BOLD_HEADER,
-            alignment=BOOKMARKS_LS_COLUMN_ALIGNMENTS,
+            header_fmt=constants.BOLD_HEADER,
+            alignment=constants.BOOKMARKS_LS_COLUMN_ALIGNMENTS,
         )
     )
 
@@ -340,8 +331,8 @@ def endpoint_arg(*args, **kwargs):
 
 
 def _map_endpoint_through_bookmarks(ctx, param, value):
-    if value in ctx.obj[BOOKMARKS]:
-        v = ctx.obj[BOOKMARKS][value]
+    if value in ctx.obj[constants.BOOKMARKS]:
+        v = ctx.obj[constants.BOOKMARKS][value]
         logger.debug(f"Found bookmark for endpoint {value} -> {v}")
         return v
     else:
@@ -353,9 +344,6 @@ def _map_endpoint_through_bookmarks(ctx, param, value):
 
 # ENDPOINT COMMANDS
 
-DEFAULT_ENDPOINTS_HEADERS = ["id", "display_name"]
-ENDPOINTS_COLUMN_ALIGNMENTS = {"id": "ljust", "display_name": "ljust"}
-
 
 @cli.command()
 @click.option("--limit", type=int, default=25, help="How many results to get.")
@@ -364,16 +352,18 @@ def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
     click.secho(
         table(
-            headers=DEFAULT_ENDPOINTS_HEADERS,
+            headers=constants.DEFAULT_ENDPOINTS_HEADERS,
             rows=endpoints,
-            alignment=ENDPOINTS_COLUMN_ALIGNMENTS,
-            header_fmt=BOLD_HEADER,
+            alignment=constants.ENDPOINTS_COLUMN_ALIGNMENTS,
+            header_fmt=constants.BOLD_HEADER,
         )
     )
 
@@ -389,22 +379,13 @@ def info(settings, endpoint):
 
     Although mostly intended for human consumption, the output is valid JSON.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
     click.secho(str(info))
-
-
-DEFAULT_HISTORY_HEADERS = [
-    "task_id",
-    "label",
-    "status",
-    "source_endpoint",
-    "destination_endpoint",
-    "completion_time",
-]
-HISTORY_COLUMN_ALIGNMENTS = {"task_id": "ljust", "label": "ljust"}
 
 
 def history_style(row):
@@ -420,7 +401,9 @@ def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -428,18 +411,14 @@ def history(settings, limit):
 
     click.secho(
         table(
-            headers=DEFAULT_HISTORY_HEADERS,
+            headers=constants.DEFAULT_HISTORY_HEADERS,
             rows=tasks,
-            alignment=HISTORY_COLUMN_ALIGNMENTS,
-            header_fmt=BOLD_HEADER,
+            alignment=constants.HISTORY_COLUMN_ALIGNMENTS,
+            header_fmt=constants.BOLD_HEADER,
             style=history_style,
         )
     )
     click.secho("\nWeb View: https://app.globus.org/activity?show=history")
-
-
-DEFAULT_LS_HEADERS = ["DATA_TYPE", "name", "size"]
-LS_COLUMN_ALIGNMENTS = {"DATA_TYPE": "ljust", "name": "ljust"}
 
 
 @cli.command()
@@ -458,17 +437,19 @@ def ls(settings, endpoint, path):
     This command is intended to produce human-readable output. The "manifest"
     command is more useful as part of a workflow.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
     entries = list(tc.operation_ls(endpoint, path=path))
     click.secho(
         table(
-            headers=DEFAULT_LS_HEADERS,
+            headers=constants.DEFAULT_LS_HEADERS,
             rows=entries,
-            alignment=LS_COLUMN_ALIGNMENTS,
-            header_fmt=BOLD_HEADER,
+            alignment=constants.LS_COLUMN_ALIGNMENTS,
+            header_fmt=constants.BOLD_HEADER,
         )
     )
 
@@ -500,9 +481,11 @@ def manifest(settings, endpoint, path, verbose):
     else:
         json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
 
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
     entries = list(tc.operation_ls(endpoint, path=path))
     click.secho(json.dumps(entries, **json_dumps_kwargs))
@@ -515,9 +498,11 @@ def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
-    activate_endpoint_or_exit(tc, endpoint)
+    activate_endpoints_or_exit(tc, [endpoint])
 
 
 # TRANSFER TASK COMMANDS
@@ -631,7 +616,9 @@ def transfer(
     (see the wait command itself for the semantics of this mode and descriptions
     of the accompanying options; run "globus wait --help").
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
     tdata = globus_sdk.TransferData(
         tc,
@@ -651,14 +638,13 @@ def transfer(
             logger.error(f"Invalid transfer specification: {t}")
             error(
                 f"Invalid transfer specification '{t}' (if transferring directories, both paths must end with /)",
-                exit_code=INVALID_TRANSFER_SPECIFICATION_ERROR,
+                exit_code=constants.INVALID_TRANSFER_SPECIFICATION_ERROR,
             )
         else:  # file -> file
             logger.debug(f"Transfer file {src} -> {dst}")
             tdata.add_item(src, dst)
 
-    activate_endpoint_or_exit(tc, source_endpoint)
-    activate_endpoint_or_exit(tc, destination_endpoint)
+    activate_endpoints_or_exit(tc, [source_endpoint, destination_endpoint])
 
     result = tc.submit_transfer(tdata)
     task_id = result["task_id"]
@@ -685,7 +671,9 @@ def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
     try:
         result = tc.cancel_task(task_id)
@@ -693,7 +681,7 @@ def cancel(settings, task_id):
         logger.exception(f"Task {task_id} was not successfully cancelled")
         error(
             f"Task {task_id} was not successfully cancelled: {e.message}",
-            exit_code=CANCEL_TASK_ERROR,
+            exit_code=constants.CANCEL_TASK_ERROR,
         )
 
     if result["code"] == "Canceled":
@@ -702,7 +690,7 @@ def cancel(settings, task_id):
         logger.error(f"Task {task_id} was not successfully cancelled:\n{result}")
         error(
             f"Task {task_id} was not successfully cancelled:\n{result}",
-            exit_code=CANCEL_TASK_ERROR,
+            exit_code=constants.CANCEL_TASK_ERROR,
         )
 
 
@@ -714,7 +702,9 @@ def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(settings[AUTH].get(REFRESH_TOKEN))
+    tc = get_transfer_client_or_exit(
+        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+    )
 
     wait_for_task_or_exit(
         transfer_client=tc,
@@ -727,11 +717,89 @@ def wait(settings, task_id, timeout, interval, attempts):
     click.secho(task_id)
 
 
+@cli.command()
+@click.option(
+    "--raw", is_flag=True, help="Print raw job ads instead of the pretty display."
+)
+@click.pass_obj
+def status(settings, raw):
+    """
+    Get information on Globus transfer HTCondor jobs.
+    """
+
+    now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+    for idx, job in enumerate(sorted(get_globus_jobs(), key=lambda j: j.cluster_id)):
+        if raw:
+            click.echo(str(job))
+            continue
+
+        status_msg = click.style(
+            f"█ {job.status}".ljust(10),
+            fg=constants.JOB_STATUS_TO_COLOR.get(job.status),
+        )
+
+        lines = [
+            f"{status_msg} {job.get('JobBatchName', 'ID: ' + str(job.cluster_id))}"
+        ]
+
+        lines.extend(
+            [
+                f"Hold Reason: {job.hold_reason}" if job.is_held else None,
+                f"Cluster ID: {job.cluster_id}",
+                f"Universe: {job.universe}",
+                f"Cron: {click.style('✔', fg = 'green') if job.is_cron else click.style('❌', fg = 'red')}",
+                f"Last status change at {job.status_last_changed_at} UTC ({humanize.naturaldelta(now - job.status_last_changed_at)} ago)",
+                f"Originally submitted at {job.submitted_at} UTC ({humanize.naturaldelta(now - job.submitted_at)} ago)",
+                f"Output: {job.stdout}",
+                f"Error: {job.stderr}",
+                f"Events: {job.log}",
+            ]
+        )
+
+        # output formatting
+        lines = list(filter(None, lines))
+        rows = [lines[0]]
+        for line in lines[1:-1]:
+            rows.append("├─ " + line)
+        rows.append("└─ " + lines[-1])
+        rows.append("")
+        click.echo("\n".join(rows))
+
+
+@cli.command()
+@click.pass_obj
+def release(settings):
+    """
+    Interactively resolve holds on Globus transfer HTCondor jobs.
+    """
+    schedd = htcondor.Schedd()
+    jobs = get_globus_jobs()
+    for ad_idx, job in enumerate(jobs):
+        click.echo(f"Attempting to resolve holds for job {job.cluster_id}")
+
+        manual_endpoints = {
+            v: k
+            for k, v in job.items()
+            if k.startswith(constants.ENDPOINT_ACTIVATION_REQUIRED)
+            and v is not classad.Value.Undefined
+        }
+        if len(manual_endpoints) > 0:
+            tc = get_transfer_client_or_exit(
+                settings[constants.AUTH].get(constants.REFRESH_TOKEN)
+            )
+            activate_endpoints_manually(tc, manual_endpoints.keys())
+            for k in manual_endpoints.values():
+                set_job_attr(k, "Undefined", scratch_ad=job)
+
+        click.secho(f"Releasing job {job.cluster_id}", fg="green")
+        schedd.act(htcondor.JobAction.Release, f"ClusterId == {job.cluster_id}")
+
+
 # CLI HELPERS
 
 
 def setup_logging(verbose):
-    if verbose >= 1:
+    if verbose >= 1 or not is_interactive():
         handler = logging.StreamHandler(stream=sys.stderr)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
@@ -740,6 +808,8 @@ def setup_logging(verbose):
             )
         )
         logger.addHandler(handler)
+
+        htcondor.enable_debug()
 
     if verbose >= 2:
         globus_logger = logging.getLogger("globus_sdk")
@@ -752,7 +822,7 @@ def get_transfer_client_or_exit(refresh_token):
         logger.error(f"No refresh token found in settings.")
         error(
             f"Was not able to find a refresh token; have you run 'globus login'?",
-            exit_code=AUTHORIZATION_ERROR,
+            exit_code=constants.AUTHORIZATION_ERROR,
         )
 
     client = get_client()
@@ -760,22 +830,71 @@ def get_transfer_client_or_exit(refresh_token):
     return globus_sdk.TransferClient(authorizer=authorizer)
 
 
-def activate_endpoint_or_exit(transfer_client, endpoint):
-    success = (
-        EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
-        or activate_endpoint_automatically(transfer_client, endpoint)
-        or activate_endpoint_manually(transfer_client, endpoint)
+def activate_endpoints_or_exit(transfer_client, endpoints):
+    unactivated_endpoints = [
+        e
+        for e in endpoints
+        if not EndpointInfo.get_or_exit(transfer_client, e).is_active
+    ]
+    unactivated_endpoints = activate_endpoints_automatically(
+        transfer_client, unactivated_endpoints
     )
-    if not success:
-        msg = f"Was not able to activate endpoint {endpoint}"
-        logger.error(msg)
-        error(msg, exit_code=ENDPOINT_ACTIVATION_ERROR)
+    unactivated_endpoints = activate_endpoints_manually(
+        transfer_client, unactivated_endpoints
+    )
 
-    expires_in = EndpointInfo.get_or_exit(
-        transfer_client, endpoint
-    ).activation_expires_in
-    logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
+    if len(unactivated_endpoints) > 0:
+        msg = f"Was not able to activate endpoints: {' '.join(unactivated_endpoints)}"
+        logger.error(msg)
+        error(msg, exit_code=constants.ENDPOINT_ACTIVATION_ERROR)
+
+    for endpoint in endpoints:
+        expires_in = EndpointInfo.get_or_exit(
+            transfer_client, endpoint
+        ).activation_expires_in
+        logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
+
     return True
+
+
+def activate_endpoints_automatically(transfer_client, endpoints):
+    unactivated = []
+    for endpoint in endpoints:
+        response = transfer_client.endpoint_autoactivate(endpoint)
+
+        if response["code"] == "AutoActivationFailed":
+            unactivated.append(endpoint)
+
+    return unactivated
+
+
+def activate_endpoints_manually(transfer_client, endpoints):
+    unactivated = []
+    for idx, endpoint in enumerate(endpoints):
+        query = urlencode(
+            {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
+        )
+        url = f"https://app.globus.org/file-manager?{query}"
+
+        msg = f"Endpoint {endpoint} requires manual activation, please open the following URL in a browser to activate the endpoint: {url}"
+        if is_interactive():
+            while not EndpointInfo.get_or_exit(transfer_client, endpoint).is_active:
+                click.secho(msg)
+                click.confirm(
+                    "Press ENTER after activating the endpoint (or ctrl-c to abort)...",
+                    show_default=False,
+                )
+        else:
+            logger.error(
+                f"Endpoint {endpoint} requires manual activation at URL {url}, but we are not running interactively."
+            )
+
+            key = f"{constants.ENDPOINT_ACTIVATION_REQUIRED}_{idx}"
+            set_job_attr(key, classad.quote(endpoint))
+
+            unactivated.append(endpoint)
+
+    return unactivated
 
 
 def wait_for_task_or_exit(
@@ -806,54 +925,12 @@ def wait_for_task_or_exit(
         if attempts >= max_attempts:
             msg = f"Timed out waiting for task {task_id} after {attempts} attempts."
             logger.error(msg)
-            error(msg, exit_code=WAIT_TASK_TIMEOUT if not errored else WAIT_TASK_ERROR)
-
-
-def table(
-    headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None
-):
-    if header_fmt is None:
-        header_fmt = lambda _: _
-    if row_fmt is None:
-        row_fmt = lambda _: _
-    if alignment is None:
-        alignment = {}
-    if style is None:
-        style = lambda _: {}
-
-    headers = tuple(headers)
-    lengths = [len(str(h)) for h in headers]
-
-    align_methods = [alignment.get(h, "center") for h in headers]
-
-    processed_rows = []
-    for row in rows:
-        processed_rows.append([str(row.get(key, fill)) for key in headers])
-
-    for row in processed_rows:
-        lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
-
-    header = header_fmt(
-        "  ".join(
-            getattr(str(h), a)(l) for h, l, a in zip(headers, lengths, align_methods)
-        ).rstrip()
-    )
-
-    lines = [
-        click.style(
-            row_fmt(
-                "  ".join(
-                    getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods)
-                )
-            ),
-            **style(original_row),
-        )
-        for original_row, row in zip(rows, processed_rows)
-    ]
-
-    output = "\n".join([header] + lines)
-
-    return output
+            error(
+                msg,
+                exit_code=constants.WAIT_TASK_TIMEOUT
+                if not errored
+                else constants.WAIT_TASK_ERROR,
+            )
 
 
 def warning(msg):
@@ -869,7 +946,7 @@ def error(msg, exit_code=1):
 
 
 def get_client():
-    return globus_sdk.NativeAppAuthClient(CLIENT_ID)
+    return globus_sdk.NativeAppAuthClient(constants.CLIENT_ID)
 
 
 def acquire_refresh_token():
@@ -886,86 +963,6 @@ def acquire_refresh_token():
     globus_transfer_data = token_response.by_resource_server["transfer.api.globus.org"]
 
     return globus_transfer_data["refresh_token"]
-
-
-def save_settings(settings, path=None):
-    path = path or SETTINGS_FILE_DEFAULT_PATH
-
-    with path.open(mode="w") as f:
-        toml.dump(settings, f)
-
-    logger.debug(f"Wrote current settings to {path}")
-
-    return path
-
-
-def load_settings(path=None):
-    path = path or SETTINGS_FILE_DEFAULT_PATH
-
-    try:
-        settings = toml.load(path)
-        logger.debug(f"Read settings from {path}")
-    except FileNotFoundError:
-        settings = {}
-        logger.debug(f"No settings file found at {path}, using blank settings")
-
-    settings.setdefault(AUTH, {})
-    settings.setdefault(BOOKMARKS, {})
-
-    return settings
-
-
-class EndpointInfo:
-    def __init__(self, response):
-        self._response = response
-
-    def __str__(self):
-        return str(self._response)
-
-    @classmethod
-    def get_or_exit(cls, transfer_client, endpoint):
-        try:
-            response = transfer_client.get_endpoint(endpoint)
-        except globus_sdk.TransferAPIError as e:
-            logger.exception(f"Could not get endpoint info")
-            error(
-                f"Was not able to get endpoint info due to error: {e.message}",
-                exit_code=ENDPOINT_INFO_ERROR,
-            )
-
-        return cls(response)
-
-    def __getitem__(self, item):
-        return self._response[item]
-
-    @property
-    def id(self):
-        return self["id"]
-
-    @property
-    def is_active(self):
-        return self["activated"] is True
-
-    @property
-    def activation_expires_in(self):
-        return datetime.timedelta(seconds=self["expires_in"])
-
-
-def activate_endpoint_automatically(transfer_client, endpoint):
-    response = transfer_client.endpoint_autoactivate(endpoint)
-
-    return response["code"] != "AutoActivationFailed"
-
-
-def activate_endpoint_manually(transfer_client, endpoint):
-    query_string = urlencode(
-        {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
-    )
-    click.secho(
-        f"Endpoint requires manual activation, please open the following URL in a browser to activate the endpoint: https://app.globus.org/file-manager?{query_string}"
-    )
-    click.confirm("Press ENTER after activating the endpoint...", show_default=False)
-    return EndpointInfo.get_or_exit(transfer_client, endpoint).is_active
 
 
 if __name__ == "__main__":
