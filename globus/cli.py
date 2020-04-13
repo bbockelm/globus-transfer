@@ -84,6 +84,9 @@ def cli(context, verbose, as_submit_description):
             +IsGlobusJob = True
             +IsTransferJob = {'transfer' in args_string}
             +WantIOProxy = True
+
+            cron_prep_time = 300
+            cron_window = 300
             
             queue 1
             """
