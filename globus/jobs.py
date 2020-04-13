@@ -70,11 +70,15 @@ class Job:
 
     @property
     def submitted_at(self):
-        return datetime.datetime.fromtimestamp(self._ad["QDate"])
+        return datetime.datetime.fromtimestamp(self._ad["QDate"]).astimezone(
+            datetime.timezone.utc
+        )
 
     @property
     def status_last_changed_at(self):
-        return datetime.datetime.fromtimestamp(self._ad["EnteredCurrentStatus"])
+        return datetime.datetime.fromtimestamp(
+            self._ad["EnteredCurrentStatus"]
+        ).astimezone(datetime.timezone.utc)
 
     @property
     def status(self):
