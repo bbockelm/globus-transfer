@@ -786,7 +786,7 @@ def release(settings):
             )
             activate_endpoints_manually(tc, manual_endpoints.keys())
             for k in manual_endpoints.values():
-                set_job_attr(k, classad.Value.Undefined, scratch_ad=job.ad)
+                set_job_attr(k, classad.Value.Undefined, scratch_ad=job)
 
         click.secho(f"Releasing job {job.cluster_id}", fg="green")
         schedd.act(htcondor.JobAction.Release, f"ClusterId == {job.cluster_id}")
