@@ -23,7 +23,7 @@ from .endpoints import EndpointInfo
 from .formatting import table
 from .settings import save_settings, load_settings
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("globus")
 logger.setLevel(logging.DEBUG)
 
 
@@ -786,7 +786,7 @@ def release(settings):
             )
             activate_endpoints_manually(tc, manual_endpoints.keys())
             for k in manual_endpoints.values():
-                set_job_attr(k, classad.Value.Undefined, scratch_ad=job)
+                set_job_attr(k, "Undefined", scratch_ad=job)
 
         click.secho(f"Releasing job {job.cluster_id}", fg="green")
         schedd.act(htcondor.JobAction.Release, f"ClusterId == {job.cluster_id}")
