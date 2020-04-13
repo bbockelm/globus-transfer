@@ -727,7 +727,7 @@ def status(settings, raw):
     Get information on Globus transfer HTCondor jobs.
     """
 
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
     for idx, job in enumerate(sorted(get_globus_jobs(), key=lambda j: j.cluster_id)):
         if raw:
             click.echo(str(job))
