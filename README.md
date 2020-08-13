@@ -26,16 +26,16 @@ For complete help (including exhaustive option information), see `globus --help`
 
 ### Start a New Transfer
 
-We'd like to transfer a file located at `~/file` 
+We'd like to transfer a file located at `~/file`
 and a directory (with all of its contents) at `~/dir` on `endpoint_a` to
 the same paths on `endpoint_b`.
 
 ```sh
 $ globus transfer endpoint_a endpoint_b '~/file':'~/file' '~/dir/':'~/dir/'
 a80aeb52-5271-11ea-ab5b-0a7959ea6081
-``` 
+```
 
-The trailing slashes indicate the directory transfers, while those without are 
+The trailing slashes indicate the directory transfers, while those without are
 file transfers. The resulting `task_id` is written to stdout.
 
 ### Wait for a Transfer to Complete
@@ -79,7 +79,7 @@ If you make changes to `setup.py`, you will need to rerun the install command.
 
 ### Get a Client ID
 
-We shouldn't need to do this again 
+We shouldn't need to do this again
 (this ID is associated with the application, not an individual user),
 but just in case...
 
@@ -87,11 +87,9 @@ but just in case...
 2. Select "Register your app with Globus".
 3. Enter a project name (e.g. "globus-transfer") and contact email.
 4. Open the "Add..." drobdown on the project you made and select "Add new app".
-5. Enter an app name (e.g. "globus-transfer"). 
+5. Enter an app name (e.g. "globus-transfer").
    Check the "native app" box.
    Select the scopes `openid`, `profile`, `email`, and `urn:globus:auth:scope:transfer.api.globus.org:all`.
    Add a redirect line containing `https://auth.globus.org/v2/web/auth-code`.
    Click "Create App".
 6. Copy the Client ID from this screen. It is not secure information.
-
-
