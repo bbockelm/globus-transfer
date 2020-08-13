@@ -1,8 +1,7 @@
-import logging
 import datetime
+import logging
 
 import globus_sdk
-
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

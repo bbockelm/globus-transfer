@@ -1,9 +1,7 @@
 import click
 
 
-def table(
-    headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None
-):
+def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None, style=None):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -33,11 +31,7 @@ def table(
 
     lines = [
         click.style(
-            row_fmt(
-                "  ".join(
-                    getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods)
-                )
-            ),
+            row_fmt("  ".join(getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods))),
             **style(original_row),
         )
         for original_row, row in zip(rows, processed_rows)

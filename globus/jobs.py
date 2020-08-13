@@ -1,15 +1,15 @@
+import datetime
+import getpass
 import logging
 import os
 from pathlib import Path
-import getpass
-import datetime
+
+import classad
+import htcondor
+from htchirp import HTChirp
 
 from . import constants
-from .uilts import is_interactive
-
-import htcondor
-import classad
-from htchirp import HTChirp
+from .utils import is_interactive
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -59,26 +59,18 @@ class Job:
     def is_cron(self):
         return any(
             self._ad.get(k, False)
-            for k in [
-                "CronMinute",
-                "CronHour",
-                "CronDayOfMonth",
-                "CronMonth",
-                "CronDayOfWeek",
-            ]
+            for k in ["CronMinute", "CronHour", "CronDayOfMonth", "CronMonth", "CronDayOfWeek",]
         )
 
     @property
     def submitted_at(self):
-        return datetime.datetime.fromtimestamp(self._ad["QDate"]).astimezone(
-            datetime.timezone.utc
-        )
+        return datetime.datetime.fromtimestamp(self._ad["QDate"]).astimezone(datetime.timezone.utc)
 
     @property
     def status_last_changed_at(self):
-        return datetime.datetime.fromtimestamp(
-            self._ad["EnteredCurrentStatus"]
-        ).astimezone(datetime.timezone.utc)
+        return datetime.datetime.fromtimestamp(self._ad["EnteredCurrentStatus"]).astimezone(
+            datetime.timezone.utc
+        )
 
     @property
     def status(self):
@@ -118,9 +110,7 @@ class Job:
 def set_job_attr(key, value, scratch_ad=None):
     if scratch_ad is None:
         if is_interactive():
-            raise ValueError(
-                "Setting a job attribute while not in a job requires a scratch ad."
-            )
+            raise ValueError("Setting a job attribute while not in a job requires a scratch ad.")
 
         scratch_ad = classad.parseOne(
             (Path(os.environ["_CONDOR_SCRATCH_DIR"]) / ".job.ad").read_text()

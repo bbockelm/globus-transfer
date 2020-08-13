@@ -2,7 +2,7 @@ import logging
 
 import toml
 
-from .constants import SETTINGS_FILE_DEFAULT_PATH, AUTH, BOOKMARKS
+from .constants import AUTH, BOOKMARKS, SETTINGS_FILE_DEFAULT_PATH
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

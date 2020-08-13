@@ -1,27 +1,27 @@
-import logging
-import sys
-from pathlib import Path
 import datetime
-import subprocess
-import pprint
 import json
+import logging
+import pprint
+import subprocess
+import sys
 import textwrap
+from pathlib import Path
 from urllib.parse import urlencode
 
-import click
-from click_didyoumean import DYMGroup
-import toml
-import globus_sdk
-import humanize
-import htcondor
 import classad
+import click
+import globus_sdk
+import htcondor
+import humanize
+import toml
+from click_didyoumean import DYMGroup
 
-from .jobs import get_globus_jobs, set_job_attr
-from .uilts import is_interactive
 from . import constants
 from .endpoints import EndpointInfo
 from .formatting import table
-from .settings import save_settings, load_settings
+from .jobs import get_globus_jobs, set_job_attr
+from .settings import load_settings, save_settings
+from .utils import is_interactive
 
 logger = logging.getLogger("globus")
 logger.setLevel(logging.DEBUG)
@@ -87,7 +87,7 @@ def cli(context, verbose, as_submit_description):
 
             cron_prep_time = 300
             cron_window = 300
-            
+
             queue 1
             """
         click.secho(textwrap.dedent(desc).lstrip())
@@ -104,9 +104,7 @@ def cli(context, verbose, as_submit_description):
     help="Which version to install (branch, tag, or sha [default master]).",
 )
 @click.option(
-    "--dry",
-    is_flag=True,
-    help="Only show what command would be run; do not actually run it.",
+    "--dry", is_flag=True, help="Only show what command would be run; do not actually run it.",
 )
 def upgrade(version, dry):
     """Upgrade this tool by installing a new version from GitHub."""
@@ -165,14 +163,8 @@ def enable_autocomplete(shell, force, destination):
     the autocompletion-enabling command runs in your shell configuration file.
     """
     cmd, dst = {
-        "bash": (
-            r'eval "$(_GLOBUS_COMPLETE=source_bash globus)"',
-            Path.home() / ".bashrc",
-        ),
-        "zsh": (
-            r'eval "$(_GLOBUS_COMPLETE=source_zsh globus)"',
-            Path.home() / ".zshrc",
-        ),
+        "bash": (r'eval "$(_GLOBUS_COMPLETE=source_bash globus)"', Path.home() / ".bashrc",),
+        "zsh": (r'eval "$(_GLOBUS_COMPLETE=source_zsh globus)"', Path.home() / ".zshrc",),
         "fish": (
             r"eval (env _GLOBUS_COMPLETE=source_fish foo-bar)",
             Path.home() / ".config" / "fish" / "completions" / "globus.fish",
@@ -190,8 +182,7 @@ def enable_autocomplete(shell, force, destination):
         f.write(f"\n# enable globus-transfer autocompletion\n{cmd}\n")
 
     click.secho(
-        f"Autocompletion enabled for {shell} (startup command added to {dst})",
-        fg="green",
+        f"Autocompletion enabled for {shell} (startup command added to {dst})", fg="green",
     )
 
 
@@ -260,9 +251,7 @@ def rename(settings, bookmark, new_bookmark):
     Rename a bookmark.
     """
     try:
-        settings[constants.BOOKMARKS][new_bookmark] = settings[constants.BOOKMARKS].pop(
-            bookmark
-        )
+        settings[constants.BOOKMARKS][new_bookmark] = settings[constants.BOOKMARKS].pop(bookmark)
     except KeyError:
         error(f"No bookmark found with name {bookmark}")
 
@@ -291,9 +280,7 @@ def clear(settings):
     Remove all bookmarks.
     """
     click.confirm(
-        "Are you sure you want to delete all of your bookmarks?",
-        abort=True,
-        default=False,
+        "Are you sure you want to delete all of your bookmarks?", abort=True, default=False,
     )
 
     settings[constants.BOOKMARKS].clear()
@@ -307,9 +294,7 @@ def ls(settings):
     """
     List endpoint bookmarks.
     """
-    rows = [
-        {"bookmark": k, "endpoint": v} for k, v in settings[constants.BOOKMARKS].items()
-    ]
+    rows = [{"bookmark": k, "endpoint": v} for k, v in settings[constants.BOOKMARKS].items()]
 
     click.secho(
         table(
@@ -323,9 +308,7 @@ def ls(settings):
 
 def endpoint_arg(*args, **kwargs):
     def _(func):
-        return click.argument(
-            *args, callback=_map_endpoint_through_bookmarks, **kwargs
-        )(func)
+        return click.argument(*args, callback=_map_endpoint_through_bookmarks, **kwargs)(func)
 
     return _
 
@@ -336,9 +319,7 @@ def _map_endpoint_through_bookmarks(ctx, param, value):
         logger.debug(f"Found bookmark for endpoint {value} -> {v}")
         return v
     else:
-        logger.debug(
-            f"No bookmark for endpoint {value}, assuming it is an actual endpoint id"
-        )
+        logger.debug(f"No bookmark for endpoint {value}, assuming it is an actual endpoint id")
         return value
 
 
@@ -352,9 +333,7 @@ def endpoints(settings, limit):
     """
     List endpoints.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     endpoints = list(tc.endpoint_search(filter_scope="my-endpoints", num_results=limit))
 
@@ -379,9 +358,7 @@ def info(settings, endpoint):
 
     Although mostly intended for human consumption, the output is valid JSON.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     info = EndpointInfo.get_or_exit(tc, endpoint)
 
@@ -401,9 +378,7 @@ def history(settings, limit):
     """
     List transfer events.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
     tasks = [task.data for task in tc.task_list(num_results=limit)]
     for task in tasks:
         if task["label"] is None:
@@ -424,10 +399,7 @@ def history(settings, limit):
 @cli.command()
 @endpoint_arg("endpoint")
 @click.option(
-    "--path",
-    type=str,
-    default="~/",
-    help="The path to list the contents of. Defaults to '~/'.",
+    "--path", type=str, default="~/", help="The path to list the contents of. Defaults to '~/'.",
 )
 @click.pass_obj
 def ls(settings, endpoint, path):
@@ -437,9 +409,7 @@ def ls(settings, endpoint, path):
     This command is intended to produce human-readable output. The "manifest"
     command is more useful as part of a workflow.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     activate_endpoints_or_exit(tc, [endpoint])
 
@@ -457,10 +427,7 @@ def ls(settings, endpoint, path):
 @cli.command()
 @endpoint_arg("endpoint")
 @click.option(
-    "--path",
-    type=str,
-    default="~/",
-    help="The path to list the contents of. Defaults to '~/'.",
+    "--path", type=str, default="~/", help="The path to list the contents of. Defaults to '~/'.",
 )
 @click.option(
     "--verbose/--compact",
@@ -481,9 +448,7 @@ def manifest(settings, endpoint, path, verbose):
     else:
         json_dumps_kwargs = dict(indent=None, separators=(",", ":"))
 
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     activate_endpoints_or_exit(tc, [endpoint])
 
@@ -498,9 +463,7 @@ def activate(settings, endpoint):
     """
     Activate a Globus endpoint.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     activate_endpoints_or_exit(tc, [endpoint])
 
@@ -557,9 +520,7 @@ def wait_args(func):
     default=True,
     help="Whether to check that file checksums are the same at source and destination after transferring. Defaults to verify. Think very hard before turning this off.",
 )
-@click.option(
-    "--wait", is_flag=True, help="If passed, wait for the transfer to complete."
-)
+@click.option("--wait", is_flag=True, help="If passed, wait for the transfer to complete.")
 @wait_args
 @click.pass_obj
 def transfer(
@@ -616,9 +577,7 @@ def transfer(
     (see the wait command itself for the semantics of this mode and descriptions
     of the accompanying options; run "globus wait --help").
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     tdata = globus_sdk.TransferData(
         tc,
@@ -671,9 +630,7 @@ def cancel(settings, task_id):
     """
     Cancel a task.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     try:
         result = tc.cancel_task(task_id)
@@ -702,9 +659,7 @@ def wait(settings, task_id, timeout, interval, attempts):
     """
     Wait for a task to complete.
     """
-    tc = get_transfer_client_or_exit(
-        settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-    )
+    tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
 
     wait_for_task_or_exit(
         transfer_client=tc,
@@ -718,9 +673,7 @@ def wait(settings, task_id, timeout, interval, attempts):
 
 
 @cli.command()
-@click.option(
-    "--raw", is_flag=True, help="Print raw job ads instead of the pretty display."
-)
+@click.option("--raw", is_flag=True, help="Print raw job ads instead of the pretty display.")
 @click.pass_obj
 def status(settings, raw):
     """
@@ -734,13 +687,10 @@ def status(settings, raw):
             continue
 
         status_msg = click.style(
-            f"█ {job.status}".ljust(10),
-            fg=constants.JOB_STATUS_TO_COLOR.get(job.status),
+            f"█ {job.status}".ljust(10), fg=constants.JOB_STATUS_TO_COLOR.get(job.status),
         )
 
-        lines = [
-            f"{status_msg} {job.get('JobBatchName', 'ID: ' + str(job.cluster_id))}"
-        ]
+        lines = [f"{status_msg} {job.get('JobBatchName', 'ID: ' + str(job.cluster_id))}"]
 
         lines.extend(
             [
@@ -784,9 +734,7 @@ def release(settings):
             and v is not classad.Value.Undefined
         }
         if len(manual_endpoints) > 0:
-            tc = get_transfer_client_or_exit(
-                settings[constants.AUTH].get(constants.REFRESH_TOKEN)
-            )
+            tc = get_transfer_client_or_exit(settings[constants.AUTH].get(constants.REFRESH_TOKEN))
             activate_endpoints_manually(tc, manual_endpoints.keys())
             for k in manual_endpoints.values():
                 set_job_attr(k, "Undefined", scratch_ad=job)
@@ -803,9 +751,7 @@ def setup_logging(verbose):
         handler = logging.StreamHandler(stream=sys.stderr)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s"
-            )
+            logging.Formatter("%(asctime)s ~ %(levelname)s ~ %(name)s:%(lineno)d ~ %(message)s")
         )
         logger.addHandler(handler)
 
@@ -832,16 +778,10 @@ def get_transfer_client_or_exit(refresh_token):
 
 def activate_endpoints_or_exit(transfer_client, endpoints):
     unactivated_endpoints = [
-        e
-        for e in endpoints
-        if not EndpointInfo.get_or_exit(transfer_client, e).is_active
+        e for e in endpoints if not EndpointInfo.get_or_exit(transfer_client, e).is_active
     ]
-    unactivated_endpoints = activate_endpoints_automatically(
-        transfer_client, unactivated_endpoints
-    )
-    unactivated_endpoints = activate_endpoints_manually(
-        transfer_client, unactivated_endpoints
-    )
+    unactivated_endpoints = activate_endpoints_automatically(transfer_client, unactivated_endpoints)
+    unactivated_endpoints = activate_endpoints_manually(transfer_client, unactivated_endpoints)
 
     if len(unactivated_endpoints) > 0:
         msg = f"Was not able to activate endpoints: {' '.join(unactivated_endpoints)}"
@@ -849,9 +789,7 @@ def activate_endpoints_or_exit(transfer_client, endpoints):
         error(msg, exit_code=constants.ENDPOINT_ACTIVATION_ERROR)
 
     for endpoint in endpoints:
-        expires_in = EndpointInfo.get_or_exit(
-            transfer_client, endpoint
-        ).activation_expires_in
+        expires_in = EndpointInfo.get_or_exit(transfer_client, endpoint).activation_expires_in
         logger.info(f"Activation of endpoint {endpoint} will expire in {expires_in}")
 
     return True
@@ -871,9 +809,7 @@ def activate_endpoints_automatically(transfer_client, endpoints):
 def activate_endpoints_manually(transfer_client, endpoints):
     unactivated = []
     for idx, endpoint in enumerate(endpoints):
-        query = urlencode(
-            {"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id}
-        )
+        query = urlencode({"origin_id": EndpointInfo.get_or_exit(transfer_client, endpoint).id})
         url = f"https://app.globus.org/file-manager?{query}"
 
         msg = f"Endpoint {endpoint} requires manual activation, please open the following URL in a browser to activate the endpoint: {url}"
@@ -897,21 +833,15 @@ def activate_endpoints_manually(transfer_client, endpoints):
     return unactivated
 
 
-def wait_for_task_or_exit(
-    transfer_client, task_id, timeout, interval=10, max_attempts=1
-):
+def wait_for_task_or_exit(transfer_client, task_id, timeout, interval=10, max_attempts=1):
     attempts = 0
     done = False
     errored = False
     while True:
         attempts += 1
-        logger.debug(
-            f"Attempting to wait for task {task_id} [attempt {attempts}/{max_attempts}]"
-        )
+        logger.debug(f"Attempting to wait for task {task_id} [attempt {attempts}/{max_attempts}]")
         try:
-            done = transfer_client.task_wait(
-                task_id, timeout=timeout, polling_interval=interval
-            )
+            done = transfer_client.task_wait(task_id, timeout=timeout, polling_interval=interval)
         except globus_sdk.TransferAPIError as e:
             logger.exception(f"Could not wait for task {task_id}.")
             warning(f"Could not wait for task {task_id} due to error: {e.message}")
@@ -927,9 +857,7 @@ def wait_for_task_or_exit(
             logger.error(msg)
             error(
                 msg,
-                exit_code=constants.WAIT_TASK_TIMEOUT
-                if not errored
-                else constants.WAIT_TASK_ERROR,
+                exit_code=constants.WAIT_TASK_TIMEOUT if not errored else constants.WAIT_TASK_ERROR,
             )
 
 
@@ -954,9 +882,7 @@ def acquire_refresh_token():
     client.oauth2_start_flow(refresh_tokens=True)
 
     click.secho(f"Go to this URL and login: {client.oauth2_get_authorize_url()}")
-    auth_code = click.prompt(
-        "Copy the code you get after login here and press enter"
-    ).strip()
+    auth_code = click.prompt("Copy the code you get after login here and press enter").strip()
 
     token_response = client.oauth2_exchange_code_for_tokens(auth_code)
 
