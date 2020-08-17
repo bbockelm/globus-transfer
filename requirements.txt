@@ -1,7 +1,0 @@
-globus-sdk ~= 1.9
-click ~= 7.1
-click-didyoumean ~= 0.0.3
-humanize ~= 2.5.0
-toml ~= 0.10.1
-htchirp ~= 2.0
-htcondor >= 8.8
